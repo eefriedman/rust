@@ -979,6 +979,9 @@ extern {
     pub fn LLVMAddDereferenceableAttr(Fn: ValueRef, index: c_uint, bytes: uint64_t);
     pub fn LLVMAddFunctionAttribute(Fn: ValueRef, index: c_uint, PA: uint64_t);
     pub fn LLVMAddFunctionAttrString(Fn: ValueRef, index: c_uint, Name: *const c_char);
+    pub fn LLVMAddFunctionAttrStringValue(Fn: ValueRef, index: c_uint,
+                                          Name: *const c_char,
+                                          Value: *const c_char);
     pub fn LLVMRemoveFunctionAttrString(Fn: ValueRef, index: c_uint, Name: *const c_char);
     pub fn LLVMGetFunctionAttr(Fn: ValueRef) -> c_ulonglong;
     pub fn LLVMRemoveFunctionAttr(Fn: ValueRef, val: c_ulonglong);
@@ -1924,6 +1927,7 @@ extern {
                                            VarInfo: DIVariable,
                                            AddrOps: *const i64,
                                            AddrOpsCount: c_uint,
+                                           DL: ValueRef,
                                            InsertAtEnd: BasicBlockRef)
                                            -> ValueRef;
 
@@ -1932,6 +1936,7 @@ extern {
                                             VarInfo: DIVariable,
                                             AddrOps: *const i64,
                                             AddrOpsCount: c_uint,
+                                            DL: ValueRef,
                                             InsertBefore: ValueRef)
                                             -> ValueRef;
 
@@ -2039,7 +2044,6 @@ extern {
                                        Level: CodeGenOptLevel,
                                        EnableSegstk: bool,
                                        UseSoftFP: bool,
-                                       NoFramePointerElim: bool,
                                        PositionIndependentExecutable: bool,
                                        FunctionSections: bool,
                                        DataSections: bool) -> TargetMachineRef;
@@ -2050,6 +2054,11 @@ extern {
     pub fn LLVMRustAddBuilderLibraryInfo(PMB: PassManagerBuilderRef,
                                          M: ModuleRef,
                                          DisableSimplifyLibCalls: bool);
+    pub fn LLVMRustConfigurePassManagerBuilder(PMB: PassManagerBuilderRef,
+                                               OptLevel: CodeGenOptLevel,
+                                               MergeFunctions: bool,
+                                               SLPVectorize: bool,
+                                               LoopVectorize: bool);
     pub fn LLVMRustAddLibraryInfo(PM: PassManagerRef, M: ModuleRef,
                                   DisableSimplifyLibCalls: bool);
     pub fn LLVMRustRunFunctionPassManager(PM: PassManagerRef, M: ModuleRef);
