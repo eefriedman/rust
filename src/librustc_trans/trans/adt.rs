@@ -76,22 +76,10 @@ pub enum Repr<'tcx> {
     /// C-like enums; basically an int.
     CEnum(IntType, Disr, Disr), // discriminant range (signedness based on the IntType)
     /// Single-case variants, and structs/tuples/records.
-    ///
-    /// Structs with destructors need a dynamic destroyedness flag to
-    /// avoid running the destructor too many times; this is included
-    /// in the `Struct` if present.
-    /// (The flag if nonzero, represents the initialization value to use;
-    ///  if zero, then use no flag at all.)
-    Univariant(Struct<'tcx>, u8),
+    Univariant(Struct<'tcx>),
     /// General-case enums: for each case there is a struct, and they
     /// all start with a field for the discriminant.
-    ///
-    /// Types with destructors need a dynamic destroyedness flag to
-    /// avoid running the destructor too many times; the last argument
-    /// indicates whether such a flag is present.
-    /// (The flag, if nonzero, represents the initialization value to use;
-    ///  if zero, then use no flag at all.)
-    General(IntType, Vec<Struct<'tcx>>, u8),
+    General(IntType, Vec<Struct<'tcx>>),
     /// Two cases distinguished by a nullable pointer: the case with discriminant
     /// `nndiscr` must have single field which is known to be nonnull due to its type.
     /// The other case is known to be zero sized. Hence we represent the enum
@@ -155,97 +143,40 @@ pub fn represent_type<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     repr
 }
 
-macro_rules! repeat_u8_as_u32 {
-    ($name:expr) => { (($name as u32) << 24 |
-                       ($name as u32) << 16 |
-                       ($name as u32) <<  8 |
-                       ($name as u32)) }
-}
-macro_rules! repeat_u8_as_u64 {
-    ($name:expr) => { ((repeat_u8_as_u32!($name) as u64) << 32 |
-                       (repeat_u8_as_u32!($name) as u64)) }
-}
-
-pub const DTOR_NEEDED: u8 = 0xd4;
-pub const DTOR_NEEDED_U32: u32 = repeat_u8_as_u32!(DTOR_NEEDED);
-pub const DTOR_NEEDED_U64: u64 = repeat_u8_as_u64!(DTOR_NEEDED);
-#[allow(dead_code)]
-pub fn dtor_needed_usize(ccx: &CrateContext) -> usize {
-    match &ccx.tcx().sess.target.target.target_pointer_width[..] {
-        "32" => DTOR_NEEDED_U32 as usize,
-        "64" => DTOR_NEEDED_U64 as usize,
-        tws => panic!("Unsupported target word size for int: {}", tws),
-    }
-}
-
-pub const DTOR_DONE: u8 = 0x1d;
-pub const DTOR_DONE_U32: u32 = repeat_u8_as_u32!(DTOR_DONE);
-pub const DTOR_DONE_U64: u64 = repeat_u8_as_u64!(DTOR_DONE);
-#[allow(dead_code)]
-pub fn dtor_done_usize(ccx: &CrateContext) -> usize {
-    match &ccx.tcx().sess.target.target.target_pointer_width[..] {
-        "32" => DTOR_DONE_U32 as usize,
-        "64" => DTOR_DONE_U64 as usize,
-        tws => panic!("Unsupported target word size for int: {}", tws),
-    }
-}
-
-fn dtor_to_init_u8(dtor: bool) -> u8 {
-    if dtor { DTOR_NEEDED } else { 0 }
-}
-
-pub trait GetDtorType<'tcx> { fn dtor_type(&self) -> Ty<'tcx>; }
-impl<'tcx> GetDtorType<'tcx> for ty::ctxt<'tcx> {
-    fn dtor_type(&self) -> Ty<'tcx> { self.types.u8 }
-}
-
-fn dtor_active(flag: u8) -> bool {
-    flag != 0
-}
-
 fn represent_type_uncached<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                      t: Ty<'tcx>) -> Repr<'tcx> {
     match t.sty {
         ty::ty_tup(ref elems) => {
-            Univariant(mk_struct(cx, &elems[..], false, t), 0)
+            Univariant(mk_struct(cx, &elems[..], false, t))
         }
         ty::ty_struct(def_id, substs) => {
             let fields = ty::lookup_struct_fields(cx.tcx(), def_id);
-            let mut ftys = fields.iter().map(|field| {
+            let ftys = fields.iter().map(|field| {
                 let fty = ty::lookup_field_type(cx.tcx(), def_id, field.id, substs);
                 monomorphize::normalize_associated_type(cx.tcx(), &fty)
             }).collect::<Vec<_>>();
             let packed = ty::lookup_packed(cx.tcx(), def_id);
-            let dtor = ty::ty_dtor(cx.tcx(), def_id).has_drop_flag();
-            if dtor {
-                ftys.push(cx.tcx().dtor_type());
-            }
-
-            Univariant(mk_struct(cx, &ftys[..], packed, t), dtor_to_init_u8(dtor))
+            Univariant(mk_struct(cx, &ftys[..], packed, t))
         }
         ty::ty_closure(def_id, substs) => {
             let typer = NormalizingClosureTyper::new(cx.tcx());
             let upvars = typer.closure_upvars(def_id, substs).unwrap();
             let upvar_types = upvars.iter().map(|u| u.ty).collect::<Vec<_>>();
-            Univariant(mk_struct(cx, &upvar_types[..], false, t), 0)
+            Univariant(mk_struct(cx, &upvar_types[..], false, t))
         }
         ty::ty_enum(def_id, substs) => {
             let cases = get_cases(cx.tcx(), def_id, substs);
             let hint = *ty::lookup_repr_hints(cx.tcx(), def_id).get(0)
                 .unwrap_or(&attr::ReprAny);
 
-            let dtor = ty::ty_dtor(cx.tcx(), def_id).has_drop_flag();
-
             if cases.is_empty() {
                 // Uninhabitable; represent as unit
                 // (Typechecking will reject discriminant-sizing attrs.)
                 assert_eq!(hint, attr::ReprAny);
-                let ftys = if dtor { vec!(cx.tcx().dtor_type()) } else { vec!() };
-                return Univariant(mk_struct(cx, &ftys[..], false, t),
-                                  dtor_to_init_u8(dtor));
+                return Univariant(mk_struct(cx, &vec!(), false, t));
             }
 
-            if !dtor && cases.iter().all(|c| c.tys.is_empty()) {
+            if cases.iter().all(|c| c.tys.is_empty()) {
                 // All bodies empty -> intlike
                 let discrs: Vec<u64> = cases.iter().map(|c| c.discr).collect();
                 let bounds = IntBounds {
@@ -271,13 +202,11 @@ fn represent_type_uncached<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 // Equivalent to a struct/tuple/newtype.
                 // (Typechecking will reject discriminant-sizing attrs.)
                 assert_eq!(hint, attr::ReprAny);
-                let mut ftys = cases[0].tys.clone();
-                if dtor { ftys.push(cx.tcx().dtor_type()); }
-                return Univariant(mk_struct(cx, &ftys[..], false, t),
-                                  dtor_to_init_u8(dtor));
+                let ftys = cases[0].tys.clone();
+                return Univariant(mk_struct(cx, &ftys[..], false, t));
             }
 
-            if !dtor && cases.len() == 2 && hint == attr::ReprAny {
+            if cases.len() == 2 && hint == attr::ReprAny {
                 // Nullable pointer optimization
                 let mut discr = 0;
                 while discr < 2 {
@@ -320,7 +249,6 @@ fn represent_type_uncached<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             let fields : Vec<_> = cases.iter().map(|c| {
                 let mut ftys = vec!(ty_of_inttype(cx.tcx(), min_ity));
                 ftys.push_all(&c.tys);
-                if dtor { ftys.push(cx.tcx().dtor_type()); }
                 mk_struct(cx, &ftys, false, t)
             }).collect();
 
@@ -373,13 +301,12 @@ fn represent_type_uncached<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             let fields : Vec<_> = cases.iter().map(|c| {
                 let mut ftys = vec!(ty_of_inttype(cx.tcx(), ity));
                 ftys.push_all(&c.tys);
-                if dtor { ftys.push(cx.tcx().dtor_type()); }
                 mk_struct(cx, &ftys[..], false, t)
             }).collect();
 
             ensure_enum_fits_in_address_space(cx, &fields[..], t);
 
-            General(ity, fields, dtor_to_init_u8(dtor))
+            General(ity, fields)
         }
         _ => cx.sess().bug(&format!("adt::represent_type called on non-ADT type: {}",
                            ty_to_string(cx.tcx(), t)))
@@ -696,7 +623,7 @@ pub fn finish_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                 r: &Repr<'tcx>, llty: &mut Type) {
     match *r {
         CEnum(..) | General(..) | RawNullablePointer { .. } => { }
-        Univariant(ref st, _) | StructWrappedNullablePointer { nonnull: ref st, .. } =>
+        Univariant(ref st) | StructWrappedNullablePointer { nonnull: ref st, .. } =>
             llty.set_struct_body(&struct_llfields(cx, st, false, false),
                                  st.packed)
     }
@@ -710,7 +637,7 @@ fn generic_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     match *r {
         CEnum(ity, _, _) => ll_inttype(cx, ity),
         RawNullablePointer { nnty, .. } => type_of::sizing_type_of(cx, nnty),
-        Univariant(ref st, _) | StructWrappedNullablePointer { nonnull: ref st, .. } => {
+        Univariant(ref st) | StructWrappedNullablePointer { nonnull: ref st, .. } => {
             match name {
                 None => {
                     Type::struct_(cx, &struct_llfields(cx, st, sizing, dst),
@@ -719,7 +646,7 @@ fn generic_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 Some(name) => { assert_eq!(sizing, false); Type::named_struct(cx, name) }
             }
         }
-        General(ity, ref sts, _) => {
+        General(ity, ref sts) => {
             // We need a representation that has:
             // * The alignment of the most-aligned field
             // * The size of the largest variant (rounded up to that alignment)
@@ -812,7 +739,7 @@ pub fn trans_get_discr<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, r: &Repr<'tcx>,
     debug!("trans_get_discr r: {:?}", r);
     let val = match *r {
         CEnum(ity, min, max) => load_discr(bcx, ity, scrutinee, min, max),
-        General(ity, ref cases, _) => {
+        General(ity, ref cases) => {
             let ptr = GEPi(bcx, scrutinee, &[0, 0]);
             load_discr(bcx, ity, ptr, 0, (cases.len() - 1) as Disr)
         }
@@ -875,7 +802,7 @@ pub fn trans_case<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, r: &Repr, discr: Disr)
             _match::SingleResult(Result::new(bcx, C_integral(ll_inttype(bcx.ccx(), ity),
                                                               discr as u64, true)))
         }
-        General(ity, _, _) => {
+        General(ity, _) => {
             _match::SingleResult(Result::new(bcx, C_integral(ll_inttype(bcx.ccx(), ity),
                                                               discr as u64, true)))
         }
@@ -900,21 +827,12 @@ pub fn trans_set_discr<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, r: &Repr<'tcx>,
             Store(bcx, C_integral(ll_inttype(bcx.ccx(), ity), discr as u64, true),
                   val);
         }
-        General(ity, ref cases, dtor) => {
-            if dtor_active(dtor) {
-                let ptr = trans_field_ptr(bcx, r, val, discr,
-                                          cases[discr as usize].fields.len() - 2);
-                Store(bcx, C_u8(bcx.ccx(), DTOR_NEEDED as usize), ptr);
-            }
+        General(ity, _) => {
             Store(bcx, C_integral(ll_inttype(bcx.ccx(), ity), discr as u64, true),
                   GEPi(bcx, val, &[0, 0]));
         }
-        Univariant(ref st, dtor) => {
+        Univariant(_) => {
             assert_eq!(discr, 0);
-            if dtor_active(dtor) {
-                Store(bcx, C_u8(bcx.ccx(), DTOR_NEEDED as usize),
-                    GEPi(bcx, val, &[0, st.fields.len() - 1]));
-            }
         }
         RawNullablePointer { nndiscr, nnty, ..} => {
             if discr != nndiscr {
@@ -944,12 +862,12 @@ fn assert_discr_in_range(ity: IntType, min: Disr, max: Disr, discr: Disr) {
 pub fn num_args(r: &Repr, discr: Disr) -> usize {
     match *r {
         CEnum(..) => 0,
-        Univariant(ref st, dtor) => {
+        Univariant(ref st) => {
             assert_eq!(discr, 0);
-            st.fields.len() - (if dtor_active(dtor) { 1 } else { 0 })
+            st.fields.len()
         }
-        General(_, ref cases, dtor) => {
-            cases[discr as usize].fields.len() - 1 - (if dtor_active(dtor) { 1 } else { 0 })
+        General(_, ref cases) => {
+            cases[discr as usize].fields.len() - 1
         }
         RawNullablePointer { nndiscr, ref nullfields, .. } => {
             if discr == nndiscr { 1 } else { nullfields.len() }
@@ -971,11 +889,11 @@ pub fn trans_field_ptr<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, r: &Repr<'tcx>,
         CEnum(..) => {
             bcx.ccx().sess().bug("element access in C-like enum")
         }
-        Univariant(ref st, _dtor) => {
+        Univariant(ref st) => {
             assert_eq!(discr, 0);
             struct_field_ptr(bcx, st, val, ix, false)
         }
-        General(_, ref cases, _) => {
+        General(_, ref cases) => {
             struct_field_ptr(bcx, &cases[discr as usize], val, ix + 1, true)
         }
         RawNullablePointer { nndiscr, ref nullfields, .. } |
@@ -1015,82 +933,6 @@ pub fn struct_field_ptr<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, st: &Struct<'tcx>, v
     GEPi(bcx, val, &[0, ix])
 }
 
-pub fn fold_variants<'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
-                                    r: &Repr<'tcx>,
-                                    value: ValueRef,
-                                    mut f: F)
-                                    -> Block<'blk, 'tcx> where
-    F: FnMut(Block<'blk, 'tcx>, &Struct<'tcx>, ValueRef) -> Block<'blk, 'tcx>,
-{
-    let fcx = bcx.fcx;
-    match *r {
-        Univariant(ref st, _) => {
-            f(bcx, st, value)
-        }
-        General(ity, ref cases, _) => {
-            let ccx = bcx.ccx();
-            let unr_cx = fcx.new_temp_block("enum-variant-iter-unr");
-            Unreachable(unr_cx);
-
-            let discr_val = trans_get_discr(bcx, r, value, None);
-            let llswitch = Switch(bcx, discr_val, unr_cx.llbb, cases.len());
-            let bcx_next = fcx.new_temp_block("enum-variant-iter-next");
-
-            for (discr, case) in cases.iter().enumerate() {
-                let mut variant_cx = fcx.new_temp_block(
-                    &format!("enum-variant-iter-{}", &discr.to_string())
-                );
-                let rhs_val = C_integral(ll_inttype(ccx, ity), discr as u64, true);
-                AddCase(llswitch, rhs_val, variant_cx.llbb);
-
-                let fields = case.fields.iter().map(|&ty|
-                    type_of::type_of(bcx.ccx(), ty)).collect::<Vec<_>>();
-                let real_ty = Type::struct_(ccx, &fields[..], case.packed);
-                let variant_value = PointerCast(variant_cx, value, real_ty.ptr_to());
-
-                variant_cx = f(variant_cx, case, variant_value);
-                Br(variant_cx, bcx_next.llbb, DebugLoc::None);
-            }
-
-            bcx_next
-        }
-        _ => unreachable!()
-    }
-}
-
-/// Access the struct drop flag, if present.
-pub fn trans_drop_flag_ptr<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
-                                       r: &Repr<'tcx>,
-                                       val: ValueRef)
-                                       -> datum::DatumBlock<'blk, 'tcx, datum::Expr>
-{
-    let tcx = bcx.tcx();
-    let ptr_ty = ty::mk_imm_ptr(bcx.tcx(), tcx.dtor_type());
-    match *r {
-        Univariant(ref st, dtor) if dtor_active(dtor) => {
-            let flag_ptr = GEPi(bcx, val, &[0, st.fields.len() - 1]);
-            datum::immediate_rvalue_bcx(bcx, flag_ptr, ptr_ty).to_expr_datumblock()
-        }
-        General(_, _, dtor) if dtor_active(dtor) => {
-            let fcx = bcx.fcx;
-            let custom_cleanup_scope = fcx.push_custom_cleanup_scope();
-            let scratch = unpack_datum!(bcx, datum::lvalue_scratch_datum(
-                bcx, tcx.dtor_type(), "drop_flag",
-                cleanup::CustomScope(custom_cleanup_scope), (), |_, bcx, _| bcx
-            ));
-            bcx = fold_variants(bcx, r, val, |variant_cx, st, value| {
-                let ptr = struct_field_ptr(variant_cx, st, value, (st.fields.len() - 1), false);
-                datum::Datum::new(ptr, ptr_ty, datum::Lvalue)
-                    .store_to(variant_cx, scratch.val)
-            });
-            let expr_datum = scratch.to_expr_datum();
-            fcx.pop_custom_cleanup_scope(custom_cleanup_scope);
-            datum::DatumBlock::new(bcx, expr_datum)
-        }
-        _ => bcx.ccx().sess().bug("tried to get drop flag of non-droppable type")
-    }
-}
-
 /// Construct a constant value, suitable for initializing a
 /// GlobalVariable, given a case and constant values for its fields.
 /// Note that this may have a different LLVM type (and different
@@ -1118,7 +960,7 @@ pub fn trans_const<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, r: &Repr<'tcx>, discr
             assert_discr_in_range(ity, min, max, discr);
             C_integral(ll_inttype(ccx, ity), discr as u64, true)
         }
-        General(ity, ref cases, _) => {
+        General(ity, ref cases) => {
             let case = &cases[discr as usize];
             let (max_sz, _) = union_size_and_align(&cases[..]);
             let lldiscr = C_integral(ll_inttype(ccx, ity), discr as u64, true);
@@ -1128,7 +970,7 @@ pub fn trans_const<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, r: &Repr<'tcx>, discr
             contents.push_all(&[padding(ccx, max_sz - case.size)]);
             C_struct(ccx, &contents[..], false)
         }
-        Univariant(ref st, _dro) => {
+        Univariant(ref st) => {
             assert!(discr == 0);
             let contents = build_const_struct(ccx, st, vals);
             C_struct(ccx, &contents[..], st.packed)
@@ -1238,7 +1080,7 @@ pub fn const_get_discrim(ccx: &CrateContext, r: &Repr, val: ValueRef) -> Disr {
                 attr::UnsignedInt(..) => const_to_uint(val) as Disr
             }
         }
-        General(ity, _, _) => {
+        General(ity, _) => {
             match ity {
                 attr::SignedInt(..) => const_to_int(const_get_elt(ccx, val, &[0])) as Disr,
                 attr::UnsignedInt(..) => const_to_uint(const_get_elt(ccx, val, &[0])) as Disr

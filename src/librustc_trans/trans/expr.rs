@@ -505,14 +505,14 @@ fn coerce_unsized<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 
             let repr_source = adt::represent_type(bcx.ccx(), source.ty);
             let src_fields = match &*repr_source {
-                &adt::Repr::Univariant(ref s, _) => &s.fields,
+                &adt::Repr::Univariant(ref s) => &s.fields,
                 _ => bcx.sess().span_bug(span,
                                          &format!("Non univariant struct? (repr_source: {:?})",
                                                   repr_source)),
             };
             let repr_target = adt::represent_type(bcx.ccx(), target.ty);
             let target_fields = match &*repr_target {
-                &adt::Repr::Univariant(ref s, _) => &s.fields,
+                &adt::Repr::Univariant(ref s) => &s.fields,
                 _ => bcx.sess().span_bug(span,
                                          &format!("Non univariant struct? (repr_target: {:?})",
                                                   repr_target)),

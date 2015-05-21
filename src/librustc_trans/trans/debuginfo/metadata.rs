@@ -1276,7 +1276,7 @@ impl<'tcx> EnumMemberDescriptionFactory<'tcx> {
     fn create_member_descriptions<'a>(&self, cx: &CrateContext<'a, 'tcx>)
                                       -> Vec<MemberDescription> {
         match *self.type_rep {
-            adt::General(_, ref struct_defs, _) => {
+            adt::General(_, ref struct_defs) => {
                 let discriminant_info = RegularDiscriminant(self.discriminant_type_metadata
                     .expect(""));
 
@@ -1311,7 +1311,7 @@ impl<'tcx> EnumMemberDescriptionFactory<'tcx> {
                         }
                     }).collect()
             },
-            adt::Univariant(ref struct_def, _) => {
+            adt::Univariant(ref struct_def) => {
                 assert!(self.variants.len() <= 1);
 
                 if self.variants.is_empty() {
@@ -1655,7 +1655,7 @@ fn prepare_enum_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         adt::RawNullablePointer { .. }           |
         adt::StructWrappedNullablePointer { .. } |
         adt::Univariant(..)                      => None,
-        adt::General(inttype, _, _) => Some(discriminant_type_metadata(inttype)),
+        adt::General(inttype, _) => Some(discriminant_type_metadata(inttype)),
     };
 
     let enum_llvm_type = type_of::type_of(cx, enum_type);

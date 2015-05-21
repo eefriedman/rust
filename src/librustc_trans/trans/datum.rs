@@ -296,8 +296,7 @@ impl KindOps for Lvalue {
                               -> Block<'blk, 'tcx> {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
         if bcx.fcx.type_needs_drop(ty) {
-            // cancel cleanup of affine values by drop-filling the memory
-            let () = drop_done_fill_mem(bcx, val, ty);
+            // FIXME: Do something here?
             bcx
         } else {
             bcx

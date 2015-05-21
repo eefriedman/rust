@@ -948,13 +948,6 @@ pub fn memcpy_ty<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     }
 }
 
-pub fn drop_done_fill_mem<'blk, 'tcx>(cx: Block<'blk, 'tcx>, llptr: ValueRef, t: Ty<'tcx>) {
-    if cx.unreachable.get() { return; }
-    let _icx = push_ctxt("drop_done_fill_mem");
-    let bcx = cx;
-    memfill(&B(bcx), llptr, t, adt::DTOR_DONE);
-}
-
 pub fn init_zero_mem<'blk, 'tcx>(cx: Block<'blk, 'tcx>, llptr: ValueRef, t: Ty<'tcx>) {
     if cx.unreachable.get() { return; }
     let _icx = push_ctxt("init_zero_mem");
@@ -1795,7 +1788,7 @@ fn enum_variant_size_lint(ccx: &CrateContext, enum_def: &ast::EnumDef, sp: Span,
     let ty = ty::node_id_to_type(ccx.tcx(), id);
     let avar = adt::represent_type(ccx, ty);
     match *avar {
-        adt::General(_, ref variants, _) => {
+        adt::General(_, ref variants) => {
             for var in variants {
                 let mut size = 0;
                 for field in var.fields.iter().skip(1) {
@@ -2623,12 +2616,6 @@ pub fn trans_crate<'tcx>(analysis: ty::CrateAnalysis<'tcx>)
         tcx.sess.opts.debug_assertions
     };
 
-    let check_dropflag = if let Some(v) = tcx.sess.opts.debugging_opts.force_dropflag_checks {
-        v
-    } else {
-        tcx.sess.opts.debug_assertions
-    };
-
     // Before we touch LLVM, make sure that multithreading is enabled.
     unsafe {
         use std::sync::Once;
@@ -2657,8 +2644,7 @@ pub fn trans_crate<'tcx>(analysis: ty::CrateAnalysis<'tcx>)
                                              Sha256::new(),
                                              link_meta.clone(),
                                              reachable,
-                                             check_overflow,
-                                             check_dropflag);
+                                             check_overflow);
 
     {
         let ccx = shared_ccx.get_ccx(0);
