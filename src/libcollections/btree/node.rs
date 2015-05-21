@@ -46,7 +46,6 @@ pub enum SearchResult<NodeRef> {
 }
 
 /// A B-Tree Node. We keep keys/edges/values separate to optimize searching for keys.
-#[unsafe_no_drop_flag]
 pub struct Node<K, V> {
     // To avoid the need for multiple allocations, we allocate a single buffer with enough space
     // for `capacity` keys, `capacity` values, and (in internal nodes) `capacity + 1` edges.
@@ -279,16 +278,6 @@ impl<T> Drop for RawItems<T> {
 
 impl<K, V> Drop for Node<K, V> {
     fn drop(&mut self) {
-        if self.keys.is_null() ||
-            (unsafe { self.keys.get() as *const K as usize == mem::POST_DROP_USIZE })
-        {
-            // Since we have #[unsafe_no_drop_flag], we have to watch
-            // out for the sentinel value being stored in self.keys. (Using
-            // null is technically a violation of the `Unique`
-            // requirements, though.)
-            return;
-        }
-
         // Do the actual cleanup.
         unsafe {
             drop(RawItems::from_slice(self.keys()));
@@ -297,8 +286,6 @@ impl<K, V> Drop for Node<K, V> {
 
             self.destroy();
         }
-
-        self.keys = unsafe { Unique::new(0 as *mut K) };
     }
 }
 

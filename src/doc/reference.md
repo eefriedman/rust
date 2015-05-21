@@ -1943,10 +1943,6 @@ macro scope.
 - `simd` - on certain tuple structs, derive the arithmetic operators, which
   lower to the target's SIMD instructions, if any; the `simd` feature gate
   is necessary to use this attribute.
-- `unsafe_no_drop_flag` - on structs, remove the flag that prevents
-  destructors from being run twice. Destructors might be run multiple times on
-  the same object with this attribute. To use this, the `unsafe_no_drop_flag` feature
-  gate must be enabled.
 - `doc` - Doc comments such as `/// foo` are equivalent to `#[doc = "foo"]`.
 - `rustc_on_unimplemented` - Write a custom note to be shown along with the error
    when the trait is found to be unimplemented on a type.
@@ -2324,12 +2320,6 @@ The currently implemented features of the reference compiler are:
 
 * `unboxed_closures` - Rust's new closure design, which is currently a work in
                        progress feature with many known bugs.
-
-* `unsafe_no_drop_flag` - Allows use of the `#[unsafe_no_drop_flag]` attribute,
-                          which removes hidden flag added to a type that
-                          implements the `Drop` trait. The design for the
-                          `Drop` flag is subject to change, and this feature
-                          may be removed in the future.
 
 * `unmarked_api` - Allows use of items within a `#![staged_api]` crate
                    which have not been marked with a stability marker.

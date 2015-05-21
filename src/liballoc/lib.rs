@@ -77,12 +77,12 @@
 #![feature(box_syntax)]
 #![feature(optin_builtin_traits)]
 #![feature(unboxed_closures)]
-#![feature(unsafe_no_drop_flag, filling_drop)]
 #![feature(core)]
 #![feature(unique)]
 #![cfg_attr(test, feature(test, alloc, rustc_private))]
 #![cfg_attr(all(not(feature = "external_funcs"), not(feature = "external_crate")),
             feature(libc))]
+#![cfg_attr(stage0, feature(unsafe_no_drop_flag))]
 
 
 #[macro_use]
@@ -112,7 +112,14 @@ pub mod boxed;
 mod boxed { pub use std::boxed::{Box, HEAP}; }
 #[cfg(test)]
 mod boxed_test;
+#[cfg(not(stage0))]
 pub mod arc;
+#[cfg(stage0)]
+mod arc_stage0;
+#[cfg(stage0)]
+pub mod arc {
+    pub use arc_stage0::*;
+}
 pub mod rc;
 
 /// Common out-of-memory routine

@@ -123,9 +123,9 @@ const KNOWN_FEATURES: &'static [(&'static str, &'static str, Status)] = &[
     // Allows using `box` in patterns; RFC 469
     ("box_patterns", "1.0.0", Active),
 
-    // Allows using the unsafe_no_drop_flag attribute (unlikely to
-    // switch to Accepted; see RFC 320)
-    ("unsafe_no_drop_flag", "1.0.0", Active),
+    // Allows using the unsafe_no_drop_flag attribute; removed in favor
+    // of dynamic drop.
+    ("unsafe_no_drop_flag", "1.0.0", Removed),
 
     // Allows the use of custom attributes; RFC 572
     ("custom_attribute", "1.0.0", Active),
@@ -261,8 +261,7 @@ pub const KNOWN_ATTRIBUTES: &'static [(&'static str, AttributeType)] = &[
     ("no_debug", Whitelisted),
     ("omit_gdb_pretty_printer_section", Whitelisted),
     ("unsafe_no_drop_flag", Gated("unsafe_no_drop_flag",
-                                  "unsafe_no_drop_flag has unstable semantics \
-                                   and may be removed in the future")),
+                                  "unsafe_no_drop_flag has been removed")),
 
     // used in resolve
     ("prelude_import", Whitelisted),

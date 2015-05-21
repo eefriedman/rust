@@ -9,12 +9,9 @@
 // except according to those terms.
 
 
-#![feature(unsafe_no_drop_flag)]
-
 static mut destructions : isize = 3;
 
 pub fn foo() {
-    #[unsafe_no_drop_flag]
     struct Foo;
 
     impl Drop for Foo {

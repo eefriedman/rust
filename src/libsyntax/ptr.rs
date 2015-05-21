@@ -71,8 +71,7 @@ impl<T: 'static> P<T> {
     {
         unsafe {
             let p = &mut *self.ptr;
-            // FIXME(#5016) this shouldn't need to drop-fill to be safe.
-            ptr::write(p, f(ptr::read_and_drop(p)));
+            ptr::write(p, f(ptr::read(p)));
         }
         self
     }

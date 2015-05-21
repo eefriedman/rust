@@ -8,11 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(unsafe_no_drop_flag)]
-
 use std::mem::size_of;
 
-#[unsafe_no_drop_flag]
 struct Test<T> {
     a: T
 }

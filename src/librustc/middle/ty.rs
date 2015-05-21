@@ -5502,7 +5502,7 @@ pub fn item_path_str(cx: &ctxt, id: ast::DefId) -> String {
 #[derive(Copy, Clone)]
 pub enum DtorKind {
     NoDtor,
-    TraitDtor(DefId, bool)
+    TraitDtor(DefId)
 }
 
 impl DtorKind {
@@ -5516,7 +5516,7 @@ impl DtorKind {
     pub fn has_drop_flag(&self) -> bool {
         match self {
             &NoDtor => false,
-            &TraitDtor(_, flag) => flag
+            &TraitDtor(_) => true
         }
     }
 }
@@ -5525,9 +5525,7 @@ impl DtorKind {
 pub fn ty_dtor(cx: &ctxt, struct_id: DefId) -> DtorKind {
     match cx.destructor_for_type.borrow().get(&struct_id) {
         Some(&method_def_id) => {
-            let flag = !has_attr(cx, struct_id, "unsafe_no_drop_flag");
-
-            TraitDtor(method_def_id, flag)
+            TraitDtor(method_def_id)
         }
         None => NoDtor,
     }

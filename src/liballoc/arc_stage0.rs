@@ -117,6 +117,7 @@ use heap::deallocate;
 ///     }
 /// }
 /// ```
+#[unsafe_no_drop_flag]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Arc<T: ?Sized> {
     // FIXME #12808: strange name to try to avoid interfering with
@@ -133,6 +134,7 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Arc<U>> for Arc<T> {}
 ///
 /// Weak pointers will not keep the data inside of the `Arc` alive, and can be
 /// used to break cycles between `Arc` pointers.
+#[unsafe_no_drop_flag]
 #[unstable(feature = "alloc",
            reason = "Weak pointers may not belong in this module.")]
 pub struct Weak<T: ?Sized> {
@@ -400,6 +402,15 @@ impl<T: ?Sized> Drop for Arc<T> {
     /// ```
     #[inline]
     fn drop(&mut self) {
+        // This structure has #[unsafe_no_drop_flag], so this drop glue may run
+        // more than once (but it is guaranteed to be zeroed after the first if
+        // it's run more than once)
+        let ptr = *self._ptr;
+        // if ptr.is_null() { return }
+        if ptr as *mut u8 as usize == 0 || ptr as *mut u8 as usize == 0x1d1d1d1d1d1d1d1d as usize {
+            return
+        }
+
         // Because `fetch_sub` is already atomic, we do not need to synchronize
         // with other threads unless we are going to delete the object. This
         // same logic applies to the below `fetch_sub` to the `weak` count.
@@ -526,6 +537,11 @@ impl<T: ?Sized> Drop for Weak<T> {
     /// ```
     fn drop(&mut self) {
         let ptr = *self._ptr;
+
+        // see comments above for why this check is here
+        if ptr as *mut u8 as usize == 0 || ptr as *mut u8 as usize == 0x1d1d1d1d1d1d1d1d as usize {
+            return
+        }
 
         // If we find out that we were the last weak pointer, then its time to
         // deallocate the data entirely. See the discussion in Arc::drop() about

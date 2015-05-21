@@ -161,7 +161,7 @@ use core::fmt;
 use core::hash::{Hasher, Hash};
 use core::intrinsics::{assume, drop_in_place};
 use core::marker::{self, Sized, Unsize};
-use core::mem::{self, min_align_of, size_of, min_align_of_val, size_of_val, forget};
+use core::mem::{min_align_of, size_of, min_align_of_val, size_of_val, forget};
 use core::nonzero::NonZero;
 use core::ops::{CoerceUnsized, Deref, Drop};
 use core::option::Option;
@@ -182,7 +182,6 @@ struct RcBox<T: ?Sized> {
 /// A reference-counted pointer type over an immutable value.
 ///
 /// See the [module level documentation](./index.html) for more details.
-#[unsafe_no_drop_flag]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Rc<T: ?Sized> {
     // FIXME #12808: strange names to try to avoid interfering with field
@@ -410,22 +409,19 @@ impl<T: ?Sized> Drop for Rc<T> {
     fn drop(&mut self) {
         unsafe {
             let ptr = *self._ptr;
-            if !(*(&ptr as *const _ as *const *const ())).is_null() &&
-               ptr as *const () as usize != mem::POST_DROP_USIZE {
-                self.dec_strong();
-                if self.strong() == 0 {
-                    // destroy the contained object
-                    drop_in_place(&mut (*ptr).value);
+            self.dec_strong();
+            if self.strong() == 0 {
+                // destroy the contained object
+                drop_in_place(&mut (*ptr).value);
 
-                    // remove the implicit "strong weak" pointer now that we've
-                    // destroyed the contents.
-                    self.dec_weak();
+                // remove the implicit "strong weak" pointer now that we've
+                // destroyed the contents.
+                self.dec_weak();
 
-                    if self.weak() == 0 {
-                        deallocate(ptr as *mut u8,
-                                   size_of_val(&*ptr),
-                                   min_align_of_val(&*ptr))
-                    }
+                if self.weak() == 0 {
+                    deallocate(ptr as *mut u8,
+                               size_of_val(&*ptr),
+                               min_align_of_val(&*ptr))
                 }
             }
         }
@@ -651,7 +647,6 @@ impl<T> fmt::Pointer for Rc<T> {
 /// dropped.
 ///
 /// See the [module level documentation](./index.html) for more.
-#[unsafe_no_drop_flag]
 #[unstable(feature = "alloc",
            reason = "Weak pointers may not belong in this module.")]
 pub struct Weak<T: ?Sized> {
@@ -727,15 +722,12 @@ impl<T: ?Sized> Drop for Weak<T> {
     fn drop(&mut self) {
         unsafe {
             let ptr = *self._ptr;
-            if !(*(&ptr as *const _ as *const *const ())).is_null() &&
-               ptr as *const () as usize != mem::POST_DROP_USIZE {
-                self.dec_weak();
-                // the weak count starts at 1, and will only go to zero if all
-                // the strong pointers have disappeared.
-                if self.weak() == 0 {
-                    deallocate(ptr as *mut u8, size_of_val(&*ptr),
-                               min_align_of_val(&*ptr))
-                }
+            self.dec_weak();
+            // the weak count starts at 1, and will only go to zero if all
+            // the strong pointers have disappeared.
+            if self.weak() == 0 {
+                deallocate(ptr as *mut u8, size_of_val(&*ptr),
+                           min_align_of_val(&*ptr))
             }
         }
     }

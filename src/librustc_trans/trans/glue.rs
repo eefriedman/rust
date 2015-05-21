@@ -508,7 +508,7 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, g: DropGlueK
         ty::ty_struct(did, substs) | ty::ty_enum(did, substs) => {
             let tcx = bcx.tcx();
             match (ty::ty_dtor(tcx, did), skip_dtor) {
-                (ty::TraitDtor(dtor, true), false) => {
+                (ty::TraitDtor(dtor), false) => {
                     // FIXME(16758) Since the struct is unsized, it is hard to
                     // find the drop flag (which is at the end of the struct).
                     // Lets just ignore the flag and pretend everything will be
@@ -524,9 +524,6 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, g: DropGlueK
                                                 bcx.ty_to_string(t)));
                         trans_struct_drop(bcx, t, v0, dtor, did, substs)
                     }
-                }
-                (ty::TraitDtor(dtor, false), false) => {
-                    trans_struct_drop(bcx, t, v0, dtor, did, substs)
                 }
                 (ty::NoDtor, _) | (_, true) => {
                     // No dtor? Just the default case

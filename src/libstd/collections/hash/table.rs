@@ -63,7 +63,6 @@ const EMPTY_BUCKET: u64 = 0;
 /// around just the "table" part of the hashtable. It enforces some
 /// invariants at the type level and employs some performance trickery,
 /// but in general is just a tricked out `Vec<Option<u64, K, V>>`.
-#[unsafe_no_drop_flag]
 pub struct RawTable<K, V> {
     capacity: usize,
     size:     usize,
@@ -988,7 +987,7 @@ impl<K: Clone, V: Clone> Clone for RawTable<K, V> {
 
 impl<K, V> Drop for RawTable<K, V> {
     fn drop(&mut self) {
-        if self.capacity == 0 || self.capacity == mem::POST_DROP_USIZE {
+        if self.capacity == 0 {
             return;
         }
 

@@ -124,7 +124,6 @@
 #![feature(unboxed_closures)]
 #![feature(unicode)]
 #![feature(unique)]
-#![feature(unsafe_no_drop_flag, filling_drop)]
 #![feature(zero_one)]
 #![cfg_attr(test, feature(float_from_str_radix))]
 #![cfg_attr(test, feature(test, rustc_private, std_misc))]

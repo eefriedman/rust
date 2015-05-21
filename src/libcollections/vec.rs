@@ -149,7 +149,6 @@ static MAX_MEMORY_SIZE: usize = isize::MAX as usize;
 /// if the vector's length is increased to 11, it will have to reallocate, which
 /// can be slow. For this reason, it is recommended to use `Vec::with_capacity`
 /// whenever possible to specify how big the vector is expected to get.
-#[unsafe_no_drop_flag]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Vec<T> {
     ptr: Unique<T>,
@@ -1628,15 +1627,11 @@ impl<T: Ord> Ord for Vec<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Drop for Vec<T> {
     fn drop(&mut self) {
-        // This is (and should always remain) a no-op if the fields are
-        // zeroed (when moving out, because of #[unsafe_no_drop_flag]).
-        if self.cap != 0 && self.cap != mem::POST_DROP_USIZE {
-            unsafe {
-                for x in &*self {
-                    ptr::read(x);
-                }
-                dealloc(*self.ptr, self.cap)
+        unsafe {
+            for x in &*self {
+                ptr::read(x);
             }
+            dealloc(*self.ptr, self.cap)
         }
     }
 }
