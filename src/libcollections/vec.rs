@@ -1627,6 +1627,7 @@ impl<T: Ord> Ord for Vec<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Drop for Vec<T> {
     fn drop(&mut self) {
+        if self.cap == 0 { return; }
         unsafe {
             for x in &*self {
                 ptr::read(x);
