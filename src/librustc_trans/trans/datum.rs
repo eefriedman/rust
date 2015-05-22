@@ -118,6 +118,13 @@ pub struct Datum<'tcx, K> {
     /// the value itself, depending on `kind` below.
     pub val: ValueRef,
 
+    /// The drop flags for the value; a i1* value pointing into an alloca.
+    /// For datums with a cleanup, the flags indicate which values in that
+    /// datum need to be dropped.  Note that this is an array because Rust
+    /// allows partially moved values; in the general case, we need to check
+    /// whether each value was dropped.
+    pub drop_flag : Option<ValueRef>,
+
     /// The rust type of the value.
     pub ty: Ty<'tcx>,
 
@@ -171,7 +178,7 @@ pub enum RvalueMode {
 }
 
 pub fn immediate_rvalue<'tcx>(val: ValueRef, ty: Ty<'tcx>) -> Datum<'tcx, Rvalue> {
-    return Datum::new(val, ty, Rvalue::new(ByValue));
+    return Datum::new_rvalue(val, ty, ByValue);
 }
 
 pub fn immediate_rvalue_bcx<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
@@ -194,15 +201,14 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
                                               -> DatumBlock<'blk, 'tcx, Lvalue> where
     F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> Block<'blk, 'tcx>,
 {
-    let llty = type_of::type_of(bcx.ccx(), ty);
-    let scratch = alloca(bcx, llty, name);
+    let scratch = alloc_ty(bcx, ty, name);
 
     // Subtle. Populate the scratch memory *before* scheduling cleanup.
     let bcx = populate(arg, bcx, scratch);
     bcx.fcx.schedule_lifetime_end(scope, scratch);
     bcx.fcx.schedule_drop_mem(scope, scratch, ty);
 
-    DatumBlock::new(bcx, Datum::new(scratch, ty, Lvalue))
+    DatumBlock::new(bcx, Datum::new_lvalue(scratch, None, ty))
 }
 
 /// Allocates temporary space on the stack using alloca() and returns a by-ref Datum pointing to
@@ -216,7 +222,7 @@ pub fn rvalue_scratch_datum<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                         -> Datum<'tcx, Rvalue> {
     let llty = type_of::type_of(bcx.ccx(), ty);
     let scratch = alloca(bcx, llty, name);
-    Datum::new(scratch, ty, Rvalue::new(ByRef))
+    Datum::new_rvalue(scratch, ty, ByRef)
 }
 
 /// Indicates the "appropriate" mode for this value, which is either by ref or by value, depending
@@ -337,6 +343,13 @@ impl KindOps for Expr {
 }
 
 impl<'tcx> Datum<'tcx, Rvalue> {
+    pub fn new_rvalue(val: ValueRef,
+                      ty: Ty<'tcx>,
+                      kind: RvalueMode)
+                      -> Datum<'tcx, Rvalue> {
+        Datum { val: val, drop_flag: None, ty: ty, kind: Rvalue::new(kind) }
+    }
+
     /// Schedules a cleanup for this datum in the given scope. That means that this datum is no
     /// longer an rvalue datum; hence, this function consumes the datum and returns the contained
     /// ValueRef.
@@ -360,7 +373,7 @@ impl<'tcx> Datum<'tcx, Rvalue> {
         match self.kind.mode {
             ByRef => {
                 add_rvalue_clean(ByRef, fcx, scope, self.val, self.ty);
-                DatumBlock::new(bcx, Datum::new(self.val, self.ty, Lvalue))
+                DatumBlock::new(bcx, Datum::new_lvalue(self.val, None, self.ty))
             }
 
             ByValue => {
@@ -396,7 +409,7 @@ impl<'tcx> Datum<'tcx, Rvalue> {
                     ByRef => {
                         let llval = load_ty(bcx, self.val, self.ty);
                         call_lifetime_end(bcx, self.val);
-                        DatumBlock::new(bcx, Datum::new(llval, self.ty, Rvalue::new(ByValue)))
+                        DatumBlock::new(bcx, Datum::new_rvalue(llval, self.ty, ByValue))
                     }
                 }
             }
@@ -415,10 +428,10 @@ impl<'tcx> Datum<'tcx, Expr> {
         F: FnOnce(Datum<'tcx, Lvalue>) -> R,
         G: FnOnce(Datum<'tcx, Rvalue>) -> R,
     {
-        let Datum { val, ty, kind } = self;
+        let Datum { val, drop_flag, ty, kind } = self;
         match kind {
-            LvalueExpr => if_lvalue(Datum::new(val, ty, Lvalue)),
-            RvalueExpr(r) => if_rvalue(Datum::new(val, ty, r)),
+            LvalueExpr => if_lvalue(Datum::new_lvalue(val, drop_flag, ty)),
+            RvalueExpr(Rvalue { mode: r }) => if_rvalue(Datum::new_rvalue(val, ty, r)),
         }
     }
 
@@ -491,7 +504,7 @@ impl<'tcx> Datum<'tcx, Expr> {
                     ByValue => {
                         let v = load_ty(bcx, l.val, l.ty);
                         bcx = l.kind.post_store(bcx, l.val, l.ty);
-                        DatumBlock::new(bcx, Datum::new(v, l.ty, Rvalue::new(ByValue)))
+                        DatumBlock::new(bcx, Datum::new_rvalue(v, l.ty, ByValue))
                     }
                 }
             },
@@ -505,6 +518,13 @@ impl<'tcx> Datum<'tcx, Expr> {
 /// such as extracting the field from a struct or a particular element
 /// from an array.
 impl<'tcx> Datum<'tcx, Lvalue> {
+    pub fn new_lvalue(val: ValueRef,
+                      drop_flag : Option<ValueRef>,
+                      ty: Ty<'tcx>)
+                      -> Datum<'tcx, Lvalue> {
+        Datum { val: val, drop_flag: drop_flag, ty: ty, kind: Lvalue }
+    }
+
     /// Converts a datum into a by-ref value. The datum type must be one which is always passed by
     /// reference.
     pub fn to_llref(self) -> ValueRef {
@@ -526,11 +546,7 @@ impl<'tcx> Datum<'tcx, Lvalue> {
         } else {
             gep(Load(bcx, expr::get_dataptr(bcx, self.val)))
         };
-        Datum {
-            val: val,
-            kind: Lvalue,
-            ty: ty,
-        }
+        Datum::new_lvalue(val, None /*FIXME*/, ty)
     }
 
     pub fn get_vec_base_and_len<'blk>(&self, bcx: Block<'blk, 'tcx>)
@@ -543,13 +559,9 @@ impl<'tcx> Datum<'tcx, Lvalue> {
 
 /// Generic methods applicable to any sort of datum.
 impl<'tcx, K: KindOps + fmt::Debug> Datum<'tcx, K> {
-    pub fn new(val: ValueRef, ty: Ty<'tcx>, kind: K) -> Datum<'tcx, K> {
-        Datum { val: val, ty: ty, kind: kind }
-    }
-
     pub fn to_expr_datum(self) -> Datum<'tcx, Expr> {
-        let Datum { val, ty, kind } = self;
-        Datum { val: val, ty: ty, kind: kind.to_expr_kind() }
+        let Datum { val, drop_flag, ty, kind } = self;
+        Datum { val: val, drop_flag: drop_flag, ty: ty, kind: kind.to_expr_kind() }
     }
 
     /// Moves or copies this value into a new home, as appropriate depending on the type of the

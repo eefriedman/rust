@@ -398,6 +398,18 @@ pub fn trans_intrinsic_call<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             let lltp_ty = type_of::type_of(ccx, tp_ty);
             C_uint(ccx, machine::llalign_of_pref(ccx, lltp_ty))
         }
+        (_, "move_val_init") => {
+            // Create a datum reflecting the value being moved.
+            // Use `appropriate_mode` so that the datum is by ref
+            // if the value is non-immediate. Note that, with
+            // intrinsics, there are no argument cleanups to
+            // concern ourselves with, so we can use an rvalue datum.
+            let tp_ty = *substs.types.get(FnSpace, 0);
+            let mode = appropriate_rvalue_mode(ccx, tp_ty);
+            let src = Datum::new_rvalue(llargs[1], tp_ty, mode);
+            bcx = src.store_to(bcx, llargs[0]);
+            C_nil(ccx)
+        }
         (_, "drop_in_place") => {
             let tp_ty = *substs.types.get(FnSpace, 0);
             glue::drop_ty(bcx, llargs[0], tp_ty, call_debug_location);

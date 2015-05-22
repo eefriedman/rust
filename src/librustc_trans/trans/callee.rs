@@ -533,10 +533,10 @@ pub fn trans_fn_ref_with_substs<'a, 'tcx>(
             let llptrty = type_of::type_of_fn_from_ty(ccx, ref_ty).ptr_to();
             if llptrty != common::val_ty(val) {
                 let val = consts::ptrcast(val, llptrty);
-                return Datum::new(val, ref_ty, Rvalue::new(ByValue));
+                return Datum::new_rvalue(val, ref_ty, ByValue);
             }
         }
-        return Datum::new(val, fn_ty, Rvalue::new(ByValue));
+        return Datum::new_rvalue(val, fn_ty, ByValue);
     }
 
     // Type scheme of the function item (may have type params)
@@ -586,7 +586,7 @@ pub fn trans_fn_ref_with_substs<'a, 'tcx>(
         debug!("trans_fn_ref_with_vtables(): not casting pointer!");
     }
 
-    Datum::new(val, fn_type, Rvalue::new(ByValue))
+    Datum::new_rvalue(val, fn_type, ByValue)
 }
 
 // ______________________________________________________________________

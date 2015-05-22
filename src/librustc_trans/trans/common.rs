@@ -402,7 +402,7 @@ pub struct FunctionContext<'a, 'tcx: 'a> {
     pub lllocals: RefCell<NodeMap<LvalueDatum<'tcx>>>,
 
     // Same as above, but for closure upvars
-    pub llupvars: RefCell<NodeMap<ValueRef>>,
+    pub llupvars: RefCell<NodeMap<LvalueDatum<'tcx>>>,
 
     // The NodeId of the function, or -1 if it doesn't correspond to
     // a user-defined function.

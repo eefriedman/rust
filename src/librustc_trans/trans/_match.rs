@@ -651,7 +651,8 @@ fn extract_variant_args<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 /// Helper for converting from the ValueRef that we pass around in the match code, which is always
 /// an lvalue, into a Datum. Eventually we should just pass around a Datum and be done with it.
 fn match_datum<'tcx>(val: ValueRef, left_ty: Ty<'tcx>) -> Datum<'tcx, Lvalue> {
-    Datum::new(val, left_ty, Lvalue)
+    // FIXME: Delete
+    Datum::new_lvalue(val, None, left_ty)
 }
 
 fn bind_subslice_pat(bcx: Block,
@@ -899,7 +900,7 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             // into the matched value and copy to our alloca
             TrByCopy(llbinding) => {
                 let llval = Load(bcx, binding_info.llmatch);
-                let datum = Datum::new(llval, binding_info.ty, Lvalue);
+                let datum = Datum::new_lvalue(llval, None, binding_info.ty);
                 call_lifetime_start(bcx, llbinding);
                 bcx = datum.store_to(bcx, llbinding);
                 if let Some(cs) = cs {
@@ -916,7 +917,8 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             TrByRef => binding_info.llmatch
         };
 
-        let datum = Datum::new(llval, binding_info.ty, Lvalue);
+        // FIXME: lifetime
+        let datum = Datum::new_lvalue(llval, None, binding_info.ty);
         if let Some(cs) = cs {
             bcx.fcx.schedule_lifetime_end(cs, binding_info.llmatch);
             bcx.fcx.schedule_drop_mem(cs, llval, binding_info.ty);
@@ -1631,9 +1633,10 @@ pub fn store_arg<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                 // Don't copy an indirect argument to an alloca, the caller
                 // already put it in a temporary alloca and gave it up, unless
                 // we emit extra-debug-info, which requires local allocas :(.
+                // FIXME: Need to manufacture lifetime flags.
                 let arg_val = arg.add_clean(bcx.fcx, arg_scope);
                 bcx.fcx.lllocals.borrow_mut()
-                   .insert(pat.id, Datum::new(arg_val, arg_ty, Lvalue));
+                   .insert(pat.id, Datum::new_lvalue(arg_val, None, arg_ty));
                 bcx
             } else {
                 mk_binding_alloca(
@@ -1662,19 +1665,11 @@ fn mk_binding_alloca<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
     F: FnOnce(A, Block<'blk, 'tcx>, ValueRef, Ty<'tcx>) -> Block<'blk, 'tcx>,
 {
     let var_ty = node_id_type(bcx, p_id);
+    let name = &bcx.name(name);
+    let DatumBlock {datum, bcx} = lvalue_scratch_datum(bcx, var_ty, name, cleanup_scope,
+        (arg, var_ty),
+        |(arg, var_ty), bcx, scratch| populate(arg, bcx, scratch, var_ty));
 
-    // Allocate memory on stack for the binding.
-    let llval = alloc_ty(bcx, var_ty, &bcx.name(name));
-
-    // Subtle: be sure that we *populate* the memory *before*
-    // we schedule the cleanup.
-    let bcx = populate(arg, bcx, llval, var_ty);
-    bcx.fcx.schedule_lifetime_end(cleanup_scope, llval);
-    bcx.fcx.schedule_drop_mem(cleanup_scope, llval, var_ty);
-
-    // Now that memory is initialized and has cleanup scheduled,
-    // create the datum and insert into the local variable map.
-    let datum = Datum::new(llval, var_ty, Lvalue);
     bcx.fcx.lllocals.borrow_mut().insert(p_id, datum);
     bcx
 }
@@ -1724,7 +1719,7 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                             ast::BindByValue(_) => {
                                 // By value binding: move the value that `val`
                                 // points at into the binding's stack slot.
-                                let d = Datum::new(val, ty, Lvalue);
+                                let d = Datum::new_lvalue(val, None, ty);
                                 d.store_to(bcx, llval)
                             }
 

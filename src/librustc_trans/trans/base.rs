@@ -1260,12 +1260,10 @@ pub fn init_function<'a, 'tcx>(fcx: &'a FunctionContext<'a, 'tcx>,
 //  - trans_args
 
 pub fn arg_kind<'a, 'tcx>(cx: &FunctionContext<'a, 'tcx>, t: Ty<'tcx>)
-                          -> datum::Rvalue {
+                          -> datum::RvalueMode {
     use trans::datum::{ByRef, ByValue};
 
-    datum::Rvalue {
-        mode: if arg_is_indirect(cx.ccx, t) { ByRef } else { ByValue }
-    }
+    if arg_is_indirect(cx.ccx, t) { ByRef } else { ByValue }
 }
 
 // work around bizarre resolve errors
@@ -1283,7 +1281,7 @@ pub fn create_datums_for_fn_args<'a, 'tcx>(fcx: &FunctionContext<'a, 'tcx>,
     // each argument into datums.
     arg_tys.iter().enumerate().map(|(i, &arg_ty)| {
         let llarg = get_param(fcx.llfn, fcx.arg_pos(i) as c_uint);
-        datum::Datum::new(llarg, arg_ty, arg_kind(fcx, arg_ty))
+        datum::Datum::new_rvalue(llarg, arg_ty, arg_kind(fcx, arg_ty))
     }).collect()
 }
 
@@ -1302,8 +1300,8 @@ fn create_datums_for_fn_args_under_call_abi<'blk, 'tcx>(
         if i < arg_tys.len() - 1 {
             // Regular argument.
             let llarg = get_param(bcx.fcx.llfn, bcx.fcx.arg_pos(i) as c_uint);
-            result.push(datum::Datum::new(llarg, arg_ty, arg_kind(bcx.fcx,
-                                                                  arg_ty)));
+            result.push(datum::Datum::new_rvalue(llarg, arg_ty, arg_kind(bcx.fcx,
+                                                                         arg_ty)));
             continue
         }
 
@@ -1327,7 +1325,7 @@ fn create_datums_for_fn_args_under_call_abi<'blk, 'tcx>(
                                 get_param(bcx.fcx.llfn,
                                           bcx.fcx.arg_pos(i + j) as c_uint);
                             let lldest = GEPi(bcx, llval, &[0, j]);
-                            let datum = datum::Datum::new(
+                            let datum = datum::Datum::new_rvalue(
                                 llarg,
                                 tupled_arg_ty,
                                 arg_kind(bcx.fcx, tupled_arg_ty));

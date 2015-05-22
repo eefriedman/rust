@@ -722,7 +722,7 @@ pub fn trans_switch<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 pub fn is_discr_signed<'tcx>(r: &Repr<'tcx>) -> bool {
     match *r {
         CEnum(ity, _, _) => ity.is_signed(),
-        General(ity, _, _) => ity.is_signed(),
+        General(ity, _) => ity.is_signed(),
         Univariant(..) => false,
         RawNullablePointer { .. } => false,
         StructWrappedNullablePointer { .. } => false,

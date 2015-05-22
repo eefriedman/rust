@@ -81,7 +81,8 @@ fn load_closure_environment<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             }
         };
         let def_id = freevar.def.def_id();
-        bcx.fcx.llupvars.borrow_mut().insert(def_id.node, upvar_ptr);
+        let datum = Datum::new_lvalue(upvar_ptr, None, node_id_type(bcx, def_id.node));
+        bcx.fcx.llupvars.borrow_mut().insert(def_id.node, datum);
 
         if kind == ty::FnOnceClosureKind && !captured_by_ref {
             bcx.fcx.schedule_drop_mem(arg_scope_id,
@@ -154,7 +155,7 @@ pub fn get_or_create_declaration_if_closure<'a, 'tcx>(ccx: &CrateContext<'a, 'tc
     match ccx.closure_vals().borrow().get(&mono_id) {
         Some(&llfn) => {
             debug!("get_or_create_declaration_if_closure(): found closure");
-            return Some(Datum::new(llfn, function_type, Rvalue::new(ByValue)))
+            return Some(Datum::new_rvalue(llfn, function_type, ByValue))
         }
         None => {}
     }
@@ -178,7 +179,7 @@ pub fn get_or_create_declaration_if_closure<'a, 'tcx>(ccx: &CrateContext<'a, 'tc
            ccx.tn().type_to_string(val_ty(llfn)));
     ccx.closure_vals().borrow_mut().insert(mono_id, llfn);
 
-    Some(Datum::new(llfn, function_type, Rvalue::new(ByValue)))
+    Some(Datum::new_rvalue(llfn, function_type, ByValue))
 }
 
 pub enum Dest<'a, 'tcx: 'a> {
@@ -409,7 +410,7 @@ fn trans_fn_once_adapter_shim<'a, 'tcx>(
     let self_scope_id = CustomScope(self_scope);
     let rvalue_mode = datum::appropriate_rvalue_mode(ccx, closure_ty);
     let llself = get_param(lloncefn, fcx.arg_pos(0) as u32);
-    let env_datum = Datum::new(llself, closure_ty, Rvalue::new(rvalue_mode));
+    let env_datum = Datum::new_rvalue(llself, closure_ty, rvalue_mode);
     let env_datum = unpack_datum!(bcx,
                                   env_datum.to_lvalue_datum_in_scope(bcx, "self",
                                                                      self_scope_id));
