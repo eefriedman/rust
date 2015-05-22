@@ -291,7 +291,7 @@ impl KindOps for Lvalue {
     /// cleanup. If an @T lvalue is copied, we must increment the reference count.
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
-                              val: ValueRef,
+                              _val: ValueRef,
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
