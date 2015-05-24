@@ -246,7 +246,7 @@ impl<'a> ConstantExpr<'a> {
 enum Opt<'a, 'tcx> {
     ConstantValue(ConstantExpr<'a>, DebugLoc),
     ConstantRange(ConstantExpr<'a>, ConstantExpr<'a>, DebugLoc),
-    Variant(ty::Disr, Rc<adt::Repr<'tcx>>, ast::DefId, DebugLoc),
+    Variant(Rc<ty::VariantInfo<'tcx>>, Rc<adt::Repr<'tcx>>, ast::DefId, DebugLoc),
     SliceLengthEqual(usize, DebugLoc),
     SliceLengthGreaterOrEqual(/* prefix length */ usize,
                               /* suffix length */ usize,
@@ -260,9 +260,9 @@ impl<'a, 'tcx> Opt<'a, 'tcx> {
             (&ConstantRange(a1, a2, _), &ConstantRange(b1, b2, _)) => {
                 a1.eq(b1, tcx) && a2.eq(b2, tcx)
             }
-            (&Variant(a_disr, ref a_repr, a_def, _),
-             &Variant(b_disr, ref b_repr, b_def, _)) => {
-                a_disr == b_disr && *a_repr == *b_repr && a_def == b_def
+            (&Variant(ref a_vinfo, ref a_repr, a_def, _),
+             &Variant(ref b_vinfo, ref b_repr, b_def, _)) => {
+                a_vinfo.disr_val == b_vinfo.disr_val && *a_repr == *b_repr && a_def == b_def
             }
             (&SliceLengthEqual(a, _), &SliceLengthEqual(b, _)) => a == b,
             (&SliceLengthGreaterOrEqual(a1, a2, _),
@@ -289,8 +289,8 @@ impl<'a, 'tcx> Opt<'a, 'tcx> {
                 let (l2, _) = consts::const_expr(ccx, &**l2, bcx.fcx.param_substs, None);
                 RangeResult(Result::new(bcx, l1), Result::new(bcx, l2))
             }
-            Variant(disr_val, ref repr, _, _) => {
-                adt::trans_case(bcx, &**repr, disr_val)
+            Variant(ref vinfo, ref repr, _, _) => {
+                adt::trans_case(bcx, &**repr, vinfo.disr_val)
             }
             SliceLengthEqual(length, _) => {
                 SingleResult(Result::new(bcx, C_uint(ccx, length)))
@@ -603,7 +603,7 @@ fn get_branches<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 match opt_def {
                     Some(def::DefVariant(enum_id, var_id, _)) => {
                         let variant = ty::enum_variant_with_id(tcx, enum_id, var_id);
-                        Variant(variant.disr_val,
+                        Variant(variant,
                                 adt::represent_node(bcx, cur.id),
                                 var_id,
                                 debug_loc)
@@ -637,12 +637,12 @@ struct ExtractedBlock<'blk, 'tcx: 'blk> {
 
 fn extract_variant_args<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                     repr: &adt::Repr<'tcx>,
-                                    disr_val: ty::Disr,
+                                    vinfo: &ty::VariantInfo<'tcx>,
                                     val: ValueRef)
                                     -> ExtractedBlock<'blk, 'tcx> {
     let _icx = push_ctxt("match::extract_variant_args");
-    let args = (0..adt::num_args(repr, disr_val)).map(|i| {
-        adt::trans_field_ptr(bcx, repr, val, disr_val, i)
+    let args = (0..adt::num_args(repr, vinfo.disr_val)).map(|i| {
+        adt::trans_field_ptr(bcx, repr, val, vinfo.disr_val, i)
     }).collect();
 
     ExtractedBlock { vals: args, bcx: bcx }
@@ -1264,9 +1264,9 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         let mut size = 0;
         let mut unpacked = Vec::new();
         match *opt {
-            Variant(disr_val, ref repr, _, _) => {
+            Variant(ref vinfo, ref repr, _, _) => {
                 let ExtractedBlock {vals: argvals, bcx: new_bcx} =
-                    extract_variant_args(opt_cx, &**repr, disr_val, val);
+                    extract_variant_args(opt_cx, &**repr, &vinfo, val);
                 size = argvals.len();
                 unpacked = argvals;
                 opt_cx = new_bcx;
@@ -1753,7 +1753,7 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                                          var_id);
                     let args = extract_variant_args(bcx,
                                                     &*repr,
-                                                    vinfo.disr_val,
+                                                    &vinfo,
                                                     val);
                     if let Some(ref sub_pat) = *sub_pats {
                         for (i, &argval) in args.vals.iter().enumerate() {

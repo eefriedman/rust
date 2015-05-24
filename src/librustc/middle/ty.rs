@@ -5407,7 +5407,7 @@ pub fn ty_to_def_id(ty: Ty) -> Option<ast::DefId> {
 }
 
 // Enum information
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VariantInfo<'tcx> {
     pub args: Vec<Ty<'tcx>>,
     pub arg_names: Option<Vec<ast::Name>>,
