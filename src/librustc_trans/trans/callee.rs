@@ -953,11 +953,7 @@ fn trans_args_under_call_abi<'blk, 'tcx>(
             let repr_ptr = &*repr;
             llargs.extend(field_types.iter().enumerate().map(|(i, field_type)| {
                 let arg_datum = tuple_lvalue_datum.get_element(
-                    bcx,
-                    field_type,
-                    |srcval| {
-                        adt::trans_field_ptr(bcx, repr_ptr, srcval, 0, i)
-                    }).to_expr_datum();
+                    bcx, field_type, repr_ptr, 0, i).to_expr_datum();
                 unpack_result!(bcx, trans_arg_datum(
                     bcx,
                     field_type,

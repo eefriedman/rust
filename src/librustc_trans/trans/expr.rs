@@ -716,9 +716,7 @@ fn trans_field<'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
     with_field_tys(bcx.tcx(), bare_ty, None, move |discr, field_tys| {
         let ix = get_idx(bcx.tcx(), field_tys);
         let d = base_datum.get_element(
-            bcx,
-            field_tys[ix].mt.ty,
-            |srcval| adt::trans_field_ptr(bcx, &*repr, srcval, discr, ix));
+            bcx, field_tys[ix].mt.ty, &*repr, discr, ix);
 
         if type_is_sized(bcx.tcx(), d.ty) {
             DatumBlock::new(bcx, d)
@@ -1531,8 +1529,7 @@ pub fn trans_adt<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             _ => {
                 let base_datum = unpack_datum!(bcx, trans_to_lvalue(bcx, &*base.expr, "base"));
                 for &(i, t) in &base.fields {
-                    let datum = base_datum.get_element(
-                            bcx, t, |srcval| adt::trans_field_ptr(bcx, &*repr, srcval, discr, i));
+                    let datum = base_datum.get_element(bcx, t, &*repr, discr, i);
                     assert!(type_is_sized(bcx.tcx(), datum.ty));
                     let dest = adt::trans_field_ptr(bcx, &*repr, addr, discr, i);
                     bcx = datum.store_to(bcx, dest);
