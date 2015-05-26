@@ -91,8 +91,8 @@ pub fn trans_exchange_free_ty<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     }
 }
 
-pub fn get_drop_glue_type<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
-                                    t: Ty<'tcx>) -> Ty<'tcx> {
+fn get_drop_glue_type<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                                t: Ty<'tcx>) -> Ty<'tcx> {
     let tcx = ccx.tcx();
     // Even if there is no dtor for t, there might be one deeper down and we
     // might need to pass in the vtable ptr.
@@ -129,13 +129,15 @@ pub fn get_drop_glue_type<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
 
 pub fn drop_ty<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                            v: ValueRef,
+                           drop_flags: Option<ValueRef>,
                            t: Ty<'tcx>,
                            debug_loc: DebugLoc) -> Block<'blk, 'tcx> {
-    drop_ty_core(bcx, v, t, debug_loc, false)
+    drop_ty_core(bcx, v, drop_flags, t, debug_loc, false)
 }
 
 pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                 v: ValueRef,
+                                drop_flags: Option<ValueRef>,
                                 t: Ty<'tcx>,
                                 debug_loc: DebugLoc,
                                 skip_dtor: bool) -> Block<'blk, 'tcx> {
@@ -146,8 +148,10 @@ pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         let ccx = bcx.ccx();
         let g = if skip_dtor {
             DropGlueKind::TyContents(t)
+        } else if let Some(_) = drop_flags {
+             DropGlueKind::TyContentsFlag(t)
         } else {
-            DropGlueKind::Ty(t)
+            DropGlueKind::Dtor(t)
         };
         let glue = get_drop_glue_core(ccx, g);
         let glue_type = get_drop_glue_type(ccx, t);
@@ -157,7 +161,12 @@ pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             v
         };
 
-        Call(bcx, glue, &[ptr], None, debug_loc);
+        let drop_call_args: &[_] = if let Some(drop_flags) = drop_flags {
+            &[ptr, drop_flags]
+        } else {
+            &[ptr]
+        };
+        Call(bcx, glue, drop_call_args, None, debug_loc);
     }
     bcx
 }
@@ -171,44 +180,50 @@ pub fn drop_ty_immediate<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     let _icx = push_ctxt("drop_ty_immediate");
     let vp = alloca(bcx, type_of(bcx.ccx(), t), "");
     store_ty(bcx, v, vp, t);
-    drop_ty_core(bcx, vp, t, debug_loc, skip_dtor)
+    drop_ty_core(bcx, vp, None, t, debug_loc, skip_dtor)
 }
 
 pub fn get_drop_glue<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> ValueRef {
-    get_drop_glue_core(ccx, DropGlueKind::Ty(t))
+    get_drop_glue_core(ccx, DropGlueKind::Dtor(t))
 }
 
+/// Key for the table of generated drop glue functions.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum DropGlueKind<'tcx> {
-    /// The normal path; runs the dtor, and then recurs on the contents
-    Ty(Ty<'tcx>),
-    /// Skips the dtor, if any, for ty; drops the contents directly.
-    /// Note that the dtor is only skipped at the most *shallow*
-    /// level, namely, an `impl Drop for Ty` itself. So, for example,
-    /// if Ty is Newtype(S) then only the Drop impl for for Newtype
-    /// itself will be skipped, while the Drop impl for S, if any,
-    /// will be invoked.
+    /// Skips the dtor, if any; just drops the contents directly.  This is
+    /// used in other glue routines.
     TyContents(Ty<'tcx>),
+    /// Drops the fields conditionally based on the provided drop flag array.
+    /// This is used for stack variables of types which don't implement Drop.
+    TyContentsFlag(Ty<'tcx>),
+    /// Runs the drop routine, and then recursively drops the contents, like
+    /// a C++ destructor.
+    Dtor(Ty<'tcx>),
 }
 
 impl<'tcx> DropGlueKind<'tcx> {
     fn ty(&self) -> Ty<'tcx> {
-        match *self { DropGlueKind::Ty(t) | DropGlueKind::TyContents(t) => t }
+        match *self {
+            DropGlueKind::Dtor(t) | DropGlueKind::TyContents(t) |
+            DropGlueKind::TyContentsFlag(t) => t
+        }
     }
 
     fn map_ty<F>(&self, mut f: F) -> DropGlueKind<'tcx> where F: FnMut(Ty<'tcx>) -> Ty<'tcx>
     {
         match *self {
-            DropGlueKind::Ty(t) => DropGlueKind::Ty(f(t)),
+            DropGlueKind::Dtor(t) => DropGlueKind::Dtor(f(t)),
             DropGlueKind::TyContents(t) => DropGlueKind::TyContents(f(t)),
+            DropGlueKind::TyContentsFlag(t) => DropGlueKind::TyContentsFlag(f(t)),
         }
     }
 
     fn to_string<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> String {
         let t_str = ppaux::ty_to_string(ccx.tcx(), self.ty());
         match *self {
-            DropGlueKind::Ty(_) => format!("DropGlueKind::Ty({})", t_str),
+            DropGlueKind::Dtor(_) => format!("DropGlueKind::Dtor({})", t_str),
             DropGlueKind::TyContents(_) => format!("DropGlueKind::TyContents({})", t_str),
+            DropGlueKind::TyContentsFlag(_) => format!("DropGlueKind::TyContentsFlag({})", t_str),
         }
     }
 }
@@ -229,8 +244,11 @@ fn get_drop_glue_core<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     } else {
         type_of(ccx, ty::mk_uniq(ccx.tcx(), t)).ptr_to()
     };
-
-    let llfnty = Type::glue_fn(ccx, llty);
+    let llfnargs: &[_] = match g {
+        DropGlueKind::Dtor(_) | DropGlueKind::TyContents(_) => &[llty],
+        DropGlueKind::TyContentsFlag(_) => &[llty, Type::bool(ccx).ptr_to()]
+    };
+    let llfnty = Type::func(llfnargs, &Type::void(ccx));
 
     // To avoid infinite recursion, don't `make_drop_glue` until after we've
     // added the entry to the `drop_glues` cache.
@@ -269,18 +287,23 @@ fn get_drop_glue_core<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     // type, so we don't need to explicitly cast the function parameter.
 
     let llrawptr0 = get_param(llfn, fcx.arg_pos(0) as c_uint);
-    let bcx = make_drop_glue(bcx, llrawptr0, g);
+    let drop_flags = if let DropGlueKind::TyContentsFlag(_) = g {
+        Some(get_param(llfn, fcx.arg_pos(1) as c_uint))
+    } else {
+        None
+    };
+    let bcx = make_drop_glue(bcx, llrawptr0, drop_flags, g);
     finish_fn(&fcx, bcx, ty::FnConverging(ty::mk_nil(ccx.tcx())), DebugLoc::None);
 
     llfn
 }
 
-pub fn get_res_dtor<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
-                              did: ast::DefId,
-                              t: Ty<'tcx>,
-                              parent_id: ast::DefId,
-                              substs: &Substs<'tcx>)
-                              -> ValueRef {
+fn get_res_dtor<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                          did: ast::DefId,
+                          t: Ty<'tcx>,
+                          parent_id: ast::DefId,
+                          substs: &Substs<'tcx>)
+                          -> ValueRef {
     let _icx = push_ctxt("trans_res_dtor");
     let did = inline::maybe_instantiate_inline(ccx, did);
 
@@ -412,10 +435,10 @@ pub fn size_and_align_of_dst<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, t: Ty<'tcx>, in
     }
 }
 
-fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, g: DropGlueKind<'tcx>)
+fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, drop_flags: Option<ValueRef>, g: DropGlueKind<'tcx>)
                               -> Block<'blk, 'tcx> {
     let t = g.ty();
-    let skip_dtor = match g { DropGlueKind::Ty(_) => false, DropGlueKind::TyContents(_) => true };
+    let skip_dtor = if let DropGlueKind::Dtor(_) = g { false } else { true };
     // NB: v0 is an *alias* of type t here, not a direct value.
     let _icx = push_ctxt("make_drop_glue");
 
@@ -433,7 +456,7 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, g: DropGlueK
             if !type_is_sized(bcx.tcx(), content_ty) {
                 let llval = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
                 let llbox = Load(bcx, llval);
-                let bcx = drop_ty(bcx, v0, content_ty, DebugLoc::None);
+                let bcx = drop_ty(bcx, v0, None, content_ty, DebugLoc::None);
                 let info = GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]);
                 let info = Load(bcx, info);
                 let (llsize, llalign) = size_and_align_of_dst(bcx, content_ty, info);
@@ -450,19 +473,22 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, g: DropGlueK
             } else {
                 let llval = v0;
                 let llbox = Load(bcx, llval);
-                let bcx = drop_ty(bcx, llbox, content_ty, DebugLoc::None);
+                let bcx = drop_ty(bcx, llbox, None, content_ty, DebugLoc::None);
                 trans_exchange_free_ty(bcx, llbox, content_ty, DebugLoc::None)
             }
         }
         ty::ty_struct(did, substs) | ty::ty_enum(did, substs) => {
             let tcx = bcx.tcx();
-            match (ty::ty_dtor(tcx, did), skip_dtor) {
-                (ty::TraitDtor(dtor), false) => {
+            match (ty::ty_dtor(tcx, did), g) {
+                (ty::TraitDtor(dtor), DropGlueKind::Dtor(_)) => {
                     trans_struct_drop(bcx, t, v0, dtor, did, substs)
                 }
-                (ty::NoDtor, _) | (_, true) => {
+                (_, DropGlueKind::TyContentsFlag(_)) => {
+                    iter_structural_ty(bcx, v0, drop_flags, t, |bb, vv, df, tt| drop_ty(bb, vv, df, tt, DebugLoc::None))
+                }
+                _ => {
                     // No dtor? Just the default case
-                    iter_structural_ty(bcx, v0, t, |bb, vv, tt| drop_ty(bb, vv, tt, DebugLoc::None))
+                    iter_structural_ty(bcx, v0, drop_flags, t, |bb, vv, df, tt| drop_ty(bb, vv, df, tt, DebugLoc::None))
                 }
             }
         }
@@ -485,8 +511,9 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, g: DropGlueK
             if bcx.fcx.type_needs_drop(t) {
                 iter_structural_ty(bcx,
                                    v0,
+                                   drop_flags,
                                    t,
-                                   |bb, vv, tt| drop_ty(bb, vv, tt, DebugLoc::None))
+                                   |bb, vv, df, tt| drop_ty(bb, vv, df, tt, DebugLoc::None))
             } else {
                 bcx
             }

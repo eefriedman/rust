@@ -918,10 +918,11 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         };
 
         // FIXME: lifetime
-        let datum = Datum::new_lvalue(llval, None, binding_info.ty);
+        let drop_flags = None;
+        let datum = Datum::new_lvalue(llval, drop_flags, binding_info.ty);
         if let Some(cs) = cs {
             bcx.fcx.schedule_lifetime_end(cs, binding_info.llmatch);
-            bcx.fcx.schedule_drop_mem(cs, llval, binding_info.ty);
+            bcx.fcx.schedule_drop_mem(cs, llval, drop_flags, binding_info.ty);
         }
 
         debug!("binding {} to {}", binding_info.id, bcx.val_to_string(llval));

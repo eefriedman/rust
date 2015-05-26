@@ -876,6 +876,7 @@ pub fn trans_call_inner<'a, 'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
             // drop the value if it is not being saved.
             bcx = glue::drop_ty(bcx,
                                 llretslot,
+                                None,
                                 ret_ty,
                                 debug_loc);
             call_lifetime_end(bcx, llretslot);

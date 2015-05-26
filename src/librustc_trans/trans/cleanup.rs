@@ -386,12 +386,14 @@ impl<'blk, 'tcx> CleanupMethods<'blk, 'tcx> for FunctionContext<'blk, 'tcx> {
     fn schedule_drop_mem(&self,
                          cleanup_scope: ScopeId,
                          val: ValueRef,
+                         drop_flags: Option<ValueRef>,
                          ty: Ty<'tcx>) {
         if !self.type_needs_drop(ty) { return; }
         let drop = box DropValue {
             is_immediate: false,
             must_unwind: common::type_needs_unwind_cleanup(self.ccx, ty),
             val: val,
+            drop_flags: drop_flags,
             ty: ty,
             skip_dtor: false,
         };
@@ -422,6 +424,7 @@ impl<'blk, 'tcx> CleanupMethods<'blk, 'tcx> for FunctionContext<'blk, 'tcx> {
             is_immediate: false,
             must_unwind: common::type_needs_unwind_cleanup(self.ccx, ty),
             val: val,
+            drop_flags: None,
             ty: ty,
             skip_dtor: true,
         };
@@ -446,6 +449,7 @@ impl<'blk, 'tcx> CleanupMethods<'blk, 'tcx> for FunctionContext<'blk, 'tcx> {
             is_immediate: true,
             must_unwind: common::type_needs_unwind_cleanup(self.ccx, ty),
             val: val,
+            drop_flags: None,
             ty: ty,
             skip_dtor: false,
         };
@@ -977,6 +981,7 @@ pub struct DropValue<'tcx> {
     is_immediate: bool,
     must_unwind: bool,
     val: ValueRef,
+    drop_flags: Option<ValueRef>,
     ty: Ty<'tcx>,
     skip_dtor: bool,
 }
@@ -1007,7 +1012,7 @@ impl<'tcx> Cleanup<'tcx> for DropValue<'tcx> {
         let bcx = if self.is_immediate {
             glue::drop_ty_immediate(bcx, self.val, self.ty, debug_loc, self.skip_dtor)
         } else {
-            glue::drop_ty_core(bcx, self.val, self.ty, debug_loc, self.skip_dtor)
+            glue::drop_ty_core(bcx, self.val, self.drop_flags, self.ty, debug_loc, self.skip_dtor)
         };
         bcx
     }
@@ -1145,6 +1150,7 @@ pub trait CleanupMethods<'blk, 'tcx> {
     fn schedule_drop_mem(&self,
                          cleanup_scope: ScopeId,
                          val: ValueRef,
+                         drop_flags: Option<ValueRef>,
                          ty: Ty<'tcx>);
     fn schedule_drop_adt_contents(&self,
                                   cleanup_scope: ScopeId,

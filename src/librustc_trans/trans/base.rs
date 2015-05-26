@@ -378,10 +378,11 @@ pub fn compare_simd_types<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 // Iterates through the elements of a structural type.
 pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
                                          av: ValueRef,
+                                         drop_flags: Option<ValueRef>,
                                          t: Ty<'tcx>,
                                          mut f: F)
                                          -> Block<'blk, 'tcx> where
-    F: FnMut(Block<'blk, 'tcx>, ValueRef, Ty<'tcx>) -> Block<'blk, 'tcx>,
+    F: FnMut(Block<'blk, 'tcx>, ValueRef, Option<ValueRef>, Ty<'tcx>) -> Block<'blk, 'tcx>,
 {
     let _icx = push_ctxt("iter_structural_ty");
 
@@ -392,7 +393,7 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
                                    substs: &Substs<'tcx>,
                                    f: &mut F)
                                    -> Block<'blk, 'tcx> where
-        F: FnMut(Block<'blk, 'tcx>, ValueRef, Ty<'tcx>) -> Block<'blk, 'tcx>,
+        F: FnMut(Block<'blk, 'tcx>, ValueRef, Option<ValueRef>, Ty<'tcx>) -> Block<'blk, 'tcx>,
     {
         let _icx = push_ctxt("iter_variant");
         let tcx = cx.tcx();
@@ -1693,7 +1694,7 @@ pub fn trans_named_tuple_constructor<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
     let bcx = match dest {
         expr::SaveIn(_) => bcx,
         expr::Ignore => {
-            let bcx = glue::drop_ty(bcx, llresult, result_ty, debug_loc);
+            let bcx = glue::drop_ty(bcx, llresult, None, result_ty, debug_loc);
             if !type_is_zero_size(ccx, result_ty) {
                 call_lifetime_end(bcx, llresult);
             }

@@ -81,12 +81,14 @@ fn load_closure_environment<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             }
         };
         let def_id = freevar.def.def_id();
-        let datum = Datum::new_lvalue(upvar_ptr, None, node_id_type(bcx, def_id.node));
+        let drop_flag = None;
+        let datum = Datum::new_lvalue(upvar_ptr, drop_flag, node_id_type(bcx, def_id.node));
         bcx.fcx.llupvars.borrow_mut().insert(def_id.node, datum);
 
         if kind == ty::FnOnceClosureKind && !captured_by_ref {
             bcx.fcx.schedule_drop_mem(arg_scope_id,
                                       upvar_ptr,
+                                      drop_flag,
                                       node_id_type(bcx, def_id.node))
         }
 

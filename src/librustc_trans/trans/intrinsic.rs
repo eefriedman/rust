@@ -412,7 +412,7 @@ pub fn trans_intrinsic_call<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         }
         (_, "drop_in_place") => {
             let tp_ty = *substs.types.get(FnSpace, 0);
-            glue::drop_ty(bcx, llargs[0], tp_ty, call_debug_location);
+            glue::drop_ty(bcx, llargs[0], None, tp_ty, call_debug_location);
             C_nil(ccx)
         }
         (_, "type_name") => {
@@ -875,7 +875,7 @@ pub fn trans_intrinsic_call<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
     // If we made a temporary stack slot, let's clean it up
     match dest {
         expr::Ignore => {
-            bcx = glue::drop_ty(bcx, llresult, ret_ty, call_debug_location);
+            bcx = glue::drop_ty(bcx, llresult, None, ret_ty, call_debug_location);
         }
         expr::SaveIn(_) => {}
     }

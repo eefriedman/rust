@@ -203,13 +203,14 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
     F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> Block<'blk, 'tcx>,
 {
     let scratch = alloc_ty(bcx, ty, name);
+    let drop_flag = None;
 
     // Subtle. Populate the scratch memory *before* scheduling cleanup.
     let bcx = populate(arg, bcx, scratch);
     bcx.fcx.schedule_lifetime_end(scope, scratch);
-    bcx.fcx.schedule_drop_mem(scope, scratch, ty);
+    bcx.fcx.schedule_drop_mem(scope, scratch, drop_flag, ty);
 
-    DatumBlock::new(bcx, Datum::new_lvalue(scratch, None, ty))
+    DatumBlock::new(bcx, Datum::new_lvalue(scratch, drop_flag, ty))
 }
 
 /// Allocates temporary space on the stack using alloca() and returns a by-ref Datum pointing to
@@ -246,7 +247,7 @@ fn add_rvalue_clean<'a, 'tcx>(mode: RvalueMode,
         ByValue => { fcx.schedule_drop_immediate(scope, val, ty); }
         ByRef => {
             fcx.schedule_lifetime_end(scope, val);
-            fcx.schedule_drop_mem(scope, val, ty);
+            fcx.schedule_drop_mem(scope, val, None, ty);
         }
     }
 }

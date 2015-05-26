@@ -998,6 +998,7 @@ fn trans_rvalue_stmt_unadjusted<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                     bcx, src_datum.to_rvalue_datum(bcx, "ExprAssign"));
                 bcx = glue::drop_ty(bcx,
                                     dst_datum.val,
+                                    dst_datum.drop_flag,
                                     dst_datum.ty,
                                     expr.debug_loc());
                 src_datum.store_to(bcx, dst_datum.val)
@@ -1550,7 +1551,7 @@ pub fn trans_adt<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             bcx = trans_into(bcx, &**e, SaveIn(dest));
             let scope = cleanup::CustomScope(custom_cleanup_scope);
             fcx.schedule_lifetime_end(scope, dest);
-            fcx.schedule_drop_mem(scope, dest, e_ty);
+            fcx.schedule_drop_mem(scope, dest, None, e_ty);
         }
     }
 
@@ -1562,7 +1563,7 @@ pub fn trans_adt<'a, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
     match dest {
         SaveIn(_) => bcx,
         Ignore => {
-            bcx = glue::drop_ty(bcx, addr, ty, debug_location);
+            bcx = glue::drop_ty(bcx, addr, None, ty, debug_location);
             base::call_lifetime_end(bcx, addr);
             bcx
         }
