@@ -202,7 +202,7 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
                                               arg: A,
                                               populate: F)
                                               -> DatumBlock<'blk, 'tcx, Lvalue> where
-    F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> Block<'blk, 'tcx>,
+    F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> (Block<'blk, 'tcx>, bool),
 {
     let scratch = alloc_ty(bcx, ty, name);
     let drop_flags_type = Type::array(&Type::i1(bcx.ccx()), glue::num_drop_flags(bcx.tcx(), ty));
@@ -212,7 +212,12 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
     let drop_flags = GEPi(bcx, drop_flags, &[0, 0]);
 
     // Subtle. Populate the scratch memory *before* scheduling cleanup.
-    let bcx = populate(arg, bcx, scratch);
+    let (bcx, initialized) = populate(arg, bcx, scratch);
+    for i in 0..glue::num_drop_flags(bcx.tcx(), ty)
+    {
+        let flag = GEPi(bcx, drop_flags, &[i as usize]);
+        Store(bcx, C_bool(bcx.ccx(), initialized), flag);
+    }
     bcx.fcx.schedule_lifetime_end(scope, drop_flags);
     bcx.fcx.schedule_lifetime_end(scope, scratch);
     bcx.fcx.schedule_drop_mem(scope, scratch, Some(drop_flags), ty);
@@ -400,7 +405,7 @@ impl<'tcx> Datum<'tcx, Rvalue> {
             ByValue => {
                 lvalue_scratch_datum(
                     bcx, self.ty, name, scope, self,
-                    |this, bcx, llval| this.store_to(bcx, llval))
+                    |this, bcx, llval| (this.store_to(bcx, llval), true))
             }
         }
     }

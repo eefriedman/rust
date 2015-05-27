@@ -1563,7 +1563,7 @@ pub fn store_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             let scope = cleanup::var_scope(tcx, p_id);
             bcx = mk_binding_alloca(
                 bcx, p_id, path1.node.name, scope, (),
-                |(), bcx, _llval, _ty| { /* FIXME: LIFETIME */ bcx });
+                |(), bcx, _llval, _ty| { (bcx, false) });
         });
         bcx
     }
@@ -1585,8 +1585,8 @@ pub fn store_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                     let var_scope = cleanup::var_scope(tcx, local.id);
                     return mk_binding_alloca(
                         bcx, pat.id, ident.name, var_scope, (),
-                        |(), bcx, v, _| expr::trans_into(bcx, &**init_expr,
-                                                         expr::SaveIn(v)));
+                        |(), bcx, v, _| (expr::trans_into(bcx, &**init_expr,
+                                                         expr::SaveIn(v)), true));
                 }
 
                 None => {}
@@ -1642,7 +1642,7 @@ pub fn store_arg<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             } else {
                 mk_binding_alloca(
                     bcx, pat.id, ident.name, arg_scope, arg,
-                    |arg, bcx, llval, _| arg.store_to(bcx, llval))
+                    |arg, bcx, llval, _| (arg.store_to(bcx, llval), true))
             }
         }
 
@@ -1663,7 +1663,7 @@ fn mk_binding_alloca<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
                                        arg: A,
                                        populate: F)
                                        -> Block<'blk, 'tcx> where
-    F: FnOnce(A, Block<'blk, 'tcx>, ValueRef, Ty<'tcx>) -> Block<'blk, 'tcx>,
+    F: FnOnce(A, Block<'blk, 'tcx>, ValueRef, Ty<'tcx>) -> (Block<'blk, 'tcx>, bool),
 {
     let var_ty = node_id_type(bcx, p_id);
     let name = &bcx.name(name);
@@ -1721,7 +1721,7 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                 // By value binding: move the value that `val`
                                 // points at into the binding's stack slot.
                                 let d = Datum::new_lvalue(val, None, ty);
-                                d.store_to(bcx, llval)
+                                (d.store_to(bcx, llval), true)
                             }
 
                             ast::BindByRef(_) => {
@@ -1734,7 +1734,7 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                     Store(bcx, val, llval);
                                 }
 
-                                bcx
+                                (bcx, true)
                             }
                         }
                     });

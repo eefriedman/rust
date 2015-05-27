@@ -1337,7 +1337,7 @@ fn create_datums_for_fn_args_under_call_abi<'blk, 'tcx>(
                                 arg_kind(bcx.fcx, tupled_arg_ty));
                             bcx = datum.store_to(bcx, lldest);
                         }
-                        bcx
+                        (bcx, true)
                     }));
                 let tuple = unpack_datum!(bcx,
                                           tuple.to_expr_datum()
