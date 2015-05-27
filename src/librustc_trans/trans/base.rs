@@ -389,6 +389,7 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
     fn iter_variant<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
                                    repr: &adt::Repr<'tcx>,
                                    av: ValueRef,
+                                   drop_flags: Option<ValueRef>,
                                    variant: &ty::VariantInfo<'tcx>,
                                    substs: &Substs<'tcx>,
                                    f: &mut F)
@@ -401,7 +402,9 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
 
         for (i, &arg) in variant.args.iter().enumerate() {
             let arg = monomorphize::apply_param_substs(tcx, substs, &arg);
-            cx = f(cx, adt::trans_field_ptr(cx, repr, av, variant.disr_val, i), arg);
+            let v = adt::trans_field_ptr(cx, repr, av, variant.disr_val, i);
+            let drop_flags = drop_flags.map(|flags| glue::offset_drop_flag(cx, repr, flags, variant.disr_val, i));
+            cx = f(cx, v, drop_flags, arg);
         }
         return cx;
     }
@@ -422,6 +425,7 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
               for (i, field_ty) in field_tys.iter().enumerate() {
                   let field_ty = field_ty.mt.ty;
                   let llfld_a = adt::trans_field_ptr(cx, &*repr, data_ptr, discr, i);
+                  let drop_flags = drop_flags.map(|flags| glue::offset_drop_flag(cx, &repr, flags, discr, i));
 
                   let val = if common::type_is_sized(cx.tcx(), field_ty) {
                       llfld_a
@@ -431,7 +435,7 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
                       Store(cx, info.unwrap(), GEPi(cx, scratch.val, &[0, abi::FAT_PTR_EXTRA]));
                       scratch.val
                   };
-                  cx = f(cx, val, field_ty);
+                  cx = f(cx, val, drop_flags, field_ty);
               }
           })
       }
@@ -441,23 +445,24 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
           let upvars = typer.closure_upvars(def_id, substs).unwrap();
           for (i, upvar) in upvars.iter().enumerate() {
               let llupvar = adt::trans_field_ptr(cx, &*repr, data_ptr, 0, i);
-              cx = f(cx, llupvar, upvar.ty);
+              cx = f(cx, llupvar, None, upvar.ty);
           }
       }
       ty::ty_vec(_, Some(n)) => {
         let (base, len) = tvec::get_fixed_base_and_len(cx, data_ptr, n);
         let unit_ty = ty::sequence_element_type(cx.tcx(), t);
-        cx = tvec::iter_vec_raw(cx, base, unit_ty, len, f);
+        cx = tvec::iter_vec_raw(cx, base, unit_ty, len, |bb, vv, tt| f(bb, vv, None, tt));
       }
       ty::ty_vec(_, None) | ty::ty_str => {
         let unit_ty = ty::sequence_element_type(cx.tcx(), t);
-        cx = tvec::iter_vec_raw(cx, data_ptr, unit_ty, info.unwrap(), f);
+        cx = tvec::iter_vec_raw(cx, data_ptr, unit_ty, info.unwrap(), |bb, vv, tt| f(bb, vv, None, tt));
       }
       ty::ty_tup(ref args) => {
           let repr = adt::represent_type(cx.ccx(), t);
           for (i, arg) in args.iter().enumerate() {
               let llfld_a = adt::trans_field_ptr(cx, &*repr, data_ptr, 0, i);
-              cx = f(cx, llfld_a, *arg);
+              let drop_flags = drop_flags.map(|flags| glue::offset_drop_flag(cx, &repr, flags, 0, i));
+              cx = f(cx, llfld_a, drop_flags, *arg);
           }
       }
       ty::ty_enum(tid, substs) => {
@@ -475,12 +480,11 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
               (_match::Single, None) => {
                   if n_variants != 0 {
                       assert!(n_variants == 1);
-                      cx = iter_variant(cx, &*repr, av, &*(*variants)[0],
-                                        substs, &mut f);
+                      cx = iter_variant(cx, &*repr, av, drop_flags,
+                                        &*(*variants)[0], substs, &mut f);
                   }
               }
               (_match::Switch, Some(lldiscrim_a)) => {
-                  cx = f(cx, lldiscrim_a, cx.tcx().types.isize);
                   let unr_cx = fcx.new_temp_block("enum-iter-unr");
                   Unreachable(unr_cx);
                   let llswitch = Switch(cx, lldiscrim_a, unr_cx.llbb,
@@ -504,6 +508,7 @@ pub fn iter_structural_ty<'blk, 'tcx, F>(cx: Block<'blk, 'tcx>,
                           iter_variant(variant_cx,
                                        &*repr,
                                        data_ptr,
+                                       drop_flags,
                                        &**variant,
                                        substs,
                                        &mut f);

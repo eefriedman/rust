@@ -45,6 +45,106 @@ use arena::TypedArena;
 use libc::c_uint;
 use syntax::ast;
 
+pub fn num_drop_flags<'tcx>(tcx: &ty::ctxt<'tcx>, ty: Ty<'tcx>) -> u64
+{
+    // FIXME: It's possible that the current semantics of `match` constructs
+    // isn't actually what we want... limiting situations where partial moves
+    // are allowed would substantially reduce the size of flag arrays.
+
+    match ty.sty {
+        // One drop flag for the allocation, and some number for the contents.
+        // FIXME: See above about partial moves.
+        ty::ty_uniq(content_ty) => 1 + num_drop_flags(tcx, content_ty),
+
+        // Traits objects are opaque, so there's exactly one drop flag.
+        ty::ty_trait(..) => 1,
+
+        ty::ty_struct(did, substs)  => {
+            if ty::has_dtor(tcx, did)
+            {
+                // Structs which implement drop are treated as a single object.
+                1
+            } else {
+                // Allocate enough drop flags to handle partial moves.
+                let fields = ty::struct_fields(tcx, did, substs);
+                fields.iter().map(|f| num_drop_flags(tcx, f.mt.ty)).sum()
+            }
+        }
+
+        ty::ty_enum(did, substs) => {
+            if ty::has_dtor(tcx, did) {
+                // Enums which implement drop are treated as a single object.
+                1
+            } else {
+                // Make sure we have enough drop flags for the biggest variant.
+                // FIXME: See above about partial moves.
+                let enum_variants = ty::substd_enum_variants(tcx, did, substs);
+                enum_variants.iter().map(|variant| {
+                    variant.args.iter().map(|arg| num_drop_flags(tcx, arg)).sum()
+                }).max().unwrap_or(0)
+            }
+        }
+
+        ty::ty_tup(ref tys) => {
+            // Allocate enough drop flags to handle partial moves.
+            tys.iter().map(|ty| num_drop_flags(tcx, ty)).sum()
+        }
+
+        // Each component of a slice needs to be tracked separately.
+        // FIXME: See above about partial moves.
+        ty::ty_vec(ty, Some(len)) => num_drop_flags(tcx, ty) * len as u64,
+
+        ty::ty_vec(_, None) |
+        ty::ty_str => panic!("Variables of slice type don't exist"),
+
+        // It is not possible to partially move out of a closure.
+        ty::ty_closure(..) => 1,
+
+        // Primitive types which don't need to be dropped.
+        ty::ty_bool | ty::ty_char | ty::ty_int(_) | ty::ty_uint(_) |
+        ty::ty_float(_) | ty::ty_ptr(_) | ty::ty_rptr(..) |
+        ty::ty_bare_fn(..) => 0,
+
+        // Misc. types which don't exist in trans.
+        ty::ty_infer(_) | ty::ty_projection(_) | ty::ty_param(_) |
+        ty::ty_err => panic!("Unexpected type in trans")
+    }
+}
+
+/// Access a field, at a point when the value's case is known.
+pub fn offset_drop_flag<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, r: &adt::Repr<'tcx>,
+                                    drop_flags: ValueRef, discr: ty::Disr, ix: usize) -> ValueRef {
+    // Note: if this ever needs to generate conditionals (e.g., if we
+    // decide to do some kind of cdr-coding-like non-unique repr
+    // someday), it will need to return a possibly-new bcx as well.
+    let empty = [];
+    let fields: &[_] = match *r {
+        adt::CEnum(..) => {
+            bcx.ccx().sess().bug("element access in C-like enum")
+        }
+        adt::Univariant(ref st) => {
+            &st.fields
+        }
+        adt::General(_, ref cases) => {
+            &cases[discr as usize].fields
+        }
+        adt::RawNullablePointer { nndiscr, ref nullfields, .. } |
+        adt::StructWrappedNullablePointer { nndiscr, ref nullfields, .. } if discr != nndiscr => {
+            nullfields
+        }
+        adt::RawNullablePointer { .. } => {
+            assert_eq!(ix, 0);
+            &empty
+        }
+        adt::StructWrappedNullablePointer { ref nonnull, .. } => {
+            &nonnull.fields
+        }
+    };
+    // FIXME: Cache this?
+    let offset: u64 = fields.iter().take(ix).map(|t| num_drop_flags(bcx.tcx(), t)).sum();
+    GEPi(bcx, drop_flags, &[offset as usize])
+}
+
 pub fn trans_exchange_free_dyn<'blk, 'tcx>(cx: Block<'blk, 'tcx>,
                                            v: ValueRef,
                                            size: ValueRef,
@@ -161,12 +261,12 @@ pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             v
         };
 
-        let drop_call_args: &[_] = if let Some(drop_flags) = drop_flags {
-            &[ptr, drop_flags]
+        if let Some(drop_flags) = drop_flags {
+            Call(bcx, glue, &[ptr, drop_flags], None, debug_loc);
         } else {
-            &[ptr]
+             Call(bcx, glue, &[ptr], None, debug_loc); 
         };
-        Call(bcx, glue, drop_call_args, None, debug_loc);
+        
     }
     bcx
 }
@@ -244,11 +344,10 @@ fn get_drop_glue_core<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     } else {
         type_of(ccx, ty::mk_uniq(ccx.tcx(), t)).ptr_to()
     };
-    let llfnargs: &[_] = match g {
-        DropGlueKind::Dtor(_) | DropGlueKind::TyContents(_) => &[llty],
-        DropGlueKind::TyContentsFlag(_) => &[llty, Type::bool(ccx).ptr_to()]
+    let llfnty = match g {
+        DropGlueKind::Dtor(_) | DropGlueKind::TyContents(_) => Type::func(&[llty], &Type::void(ccx)),
+        DropGlueKind::TyContentsFlag(_) => Type::func(&[llty, Type::bool(ccx).ptr_to()], &Type::void(ccx))
     };
-    let llfnty = Type::func(llfnargs, &Type::void(ccx));
 
     // To avoid infinite recursion, don't `make_drop_glue` until after we've
     // added the entry to the `drop_glues` cache.

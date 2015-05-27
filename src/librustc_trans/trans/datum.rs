@@ -95,13 +95,15 @@ pub use self::RvalueMode::*;
 use llvm::ValueRef;
 use trans::adt;
 use trans::base::*;
-use trans::build::Load;
+use trans::build::*;
 use trans::common::*;
 use trans::cleanup;
 use trans::cleanup::CleanupMethods;
 use trans::expr;
+use trans::glue;
 use trans::tvec;
 use trans::type_of;
+use trans::type_::Type;
 use middle::ty::{self, Ty, Disr};
 use util::ppaux::ty_to_string;
 
@@ -203,14 +205,19 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
     F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> Block<'blk, 'tcx>,
 {
     let scratch = alloc_ty(bcx, ty, name);
-    let drop_flag = None;
+    let drop_flags_type = Type::array(&Type::i1(bcx.ccx()), glue::num_drop_flags(bcx.tcx(), ty));
+    let mut drop_flags_name = name.to_owned();
+    drop_flags_name.push_str(".drop_flags");
+    let drop_flags = alloca(bcx, drop_flags_type, &drop_flags_name);
+    let drop_flags = GEPi(bcx, drop_flags, &[0, 0]);
 
     // Subtle. Populate the scratch memory *before* scheduling cleanup.
     let bcx = populate(arg, bcx, scratch);
+    bcx.fcx.schedule_lifetime_end(scope, drop_flags);
     bcx.fcx.schedule_lifetime_end(scope, scratch);
-    bcx.fcx.schedule_drop_mem(scope, scratch, drop_flag, ty);
+    bcx.fcx.schedule_drop_mem(scope, scratch, Some(drop_flags), ty);
 
-    DatumBlock::new(bcx, Datum::new_lvalue(scratch, drop_flag, ty))
+    DatumBlock::new(bcx, Datum::new_lvalue(scratch, Some(drop_flags), ty))
 }
 
 /// Allocates temporary space on the stack using alloca() and returns a by-ref Datum pointing to
@@ -253,12 +260,12 @@ fn add_rvalue_clean<'a, 'tcx>(mode: RvalueMode,
 }
 
 pub trait KindOps {
-
     /// Take appropriate action after the value in `datum` has been
     /// stored to a new location.
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
                               val: ValueRef,
+                              drop_flags: Option<ValueRef>,
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx>;
 
@@ -274,13 +281,14 @@ pub trait KindOps {
 impl KindOps for Rvalue {
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
-                              _val: ValueRef,
+                              val: ValueRef,
+                              _drop_flags: Option<ValueRef>,
                               _ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         // No cleanup is scheduled for an rvalue, so we don't have
         // to do anything after a move to cancel or duplicate it.
         if self.is_by_ref() {
-            call_lifetime_end(bcx, _val);
+            call_lifetime_end(bcx, val);
         }
         bcx
     }
@@ -300,15 +308,25 @@ impl KindOps for Lvalue {
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
                               _val: ValueRef,
+                              drop_flags: Option<ValueRef>,
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
-        if bcx.fcx.type_needs_drop(ty) {
-            // FIXME: Do something here?
-            bcx
-        } else {
-            bcx
+        if let Some(drop_flags) = drop_flags {
+            for i in 0..glue::num_drop_flags(bcx.tcx(), ty)
+            {
+                let flag = GEPi(bcx, drop_flags, &[i as usize]);
+                Store(bcx, C_bool(bcx.ccx(), false), flag);
+            }
         }
+        else
+        {
+            if bcx.fcx.type_needs_drop(ty)
+            {
+                bcx.tcx().sess.bug("Moved out of undroppable lvalue");
+            }
+        }
+        bcx
     }
 
     fn is_by_ref(&self) -> bool {
@@ -324,11 +342,12 @@ impl KindOps for Expr {
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
                               val: ValueRef,
+                              drop_flags: Option<ValueRef>,
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         match *self {
-            LvalueExpr => Lvalue.post_store(bcx, val, ty),
-            RvalueExpr(ref r) => r.post_store(bcx, val, ty),
+            LvalueExpr => Lvalue.post_store(bcx, val, drop_flags, ty),
+            RvalueExpr(ref r) => r.post_store(bcx, val, drop_flags, ty),
         }
     }
 
@@ -505,7 +524,7 @@ impl<'tcx> Datum<'tcx, Expr> {
                     }
                     ByValue => {
                         let v = load_ty(bcx, l.val, l.ty);
-                        bcx = l.kind.post_store(bcx, l.val, l.ty);
+                        bcx = l.kind.post_store(bcx, l.val, l.drop_flag, l.ty);
                         DatumBlock::new(bcx, Datum::new_rvalue(v, l.ty, ByValue))
                     }
                 }
@@ -575,7 +594,7 @@ impl<'tcx, K: KindOps + fmt::Debug> Datum<'tcx, K> {
                           -> Block<'blk, 'tcx> {
         self.shallow_copy_raw(bcx, dst);
 
-        self.kind.post_store(bcx, self.val, self.ty)
+        self.kind.post_store(bcx, self.val, self.drop_flag, self.ty)
     }
 
     /// Helper function that performs a shallow copy of this value into `dst`, which should be a
