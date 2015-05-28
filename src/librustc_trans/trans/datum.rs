@@ -579,7 +579,10 @@ impl<'tcx> Datum<'tcx, Lvalue> {
             Load(bcx, expr::get_dataptr(bcx, self.val))
         };
         val = adt::trans_field_ptr(bcx, repr_ptr, val, discr, ix);
-        Datum::new_lvalue(val, None /*FIXME*/, ty)
+        let drop_flags = self.drop_flag.map(|f| {
+            glue::offset_drop_flag(bcx, repr_ptr, f, discr, ix)
+        });
+        Datum::new_lvalue(val, drop_flags, ty)
     }
 
     pub fn get_vec_base_and_len<'blk>(&self, bcx: Block<'blk, 'tcx>)
