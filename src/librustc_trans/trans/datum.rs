@@ -91,6 +91,7 @@
 
 pub use self::Expr::*;
 pub use self::RvalueMode::*;
+pub use self::MoveCleanupKind::*;
 
 use llvm::ValueRef;
 use trans::adt;
@@ -99,6 +100,7 @@ use trans::build::*;
 use trans::common::*;
 use trans::cleanup;
 use trans::cleanup::CleanupMethods;
+use trans::debuginfo::DebugLoc;
 use trans::expr;
 use trans::glue;
 use trans::tvec;
@@ -121,12 +123,8 @@ pub struct Datum<'tcx, K> {
     /// the value itself, depending on `kind` below.
     pub val: ValueRef,
 
-    /// The drop flags for the value; a i1* value pointing into an alloca.
-    /// For datums with a cleanup, the flags indicate which values in that
-    /// datum need to be dropped.  Note that this is an array because Rust
-    /// allows partially moved values; in the general case, we need to check
-    /// whether each value was dropped.
-    pub drop_flag : Option<ValueRef>,
+    /// How to handle cleanups if this Datum is moved out of.
+    pub cleanup_kind : MoveCleanupKind,
 
     /// The rust type of the value.
     pub ty: Ty<'tcx>,
@@ -158,6 +156,28 @@ pub struct Lvalue;
 #[derive(Debug)]
 pub struct Rvalue {
     pub mode: RvalueMode
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum MoveCleanupKind {
+    /// No cleanup necessary after a move out of this datum. This could be
+    /// for a few reasons: the contained type is Copy. the datum is an rvalue
+    /// (has no cleanup), or we know the value won't be moved out of this
+    /// datum.
+    NoCleanup,
+    /// Cleanups for this datum use an array of flags on ther stack to
+    /// conditionally execute. Note that this is an array because Rust
+    /// allows partially moved values; in the general case, the cleanup
+    /// routine needs to recursively check whether each field of a
+    /// struct, tuple, or enum needs to be dropped.
+    ///
+    /// The ValueRef is a pointer into the array of flags.
+    StackDropFlags(ValueRef),
+    /// This datum points into a box, and the cleanup for that box uses a
+    /// flag on the stack to conditionally execute.
+    ///
+    /// The ValueRef is a pointer to that flag.
+    BoxDropFlag(ValueRef)
 }
 
 impl Rvalue {
@@ -229,7 +249,8 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
     bcx.fcx.schedule_lifetime_end(scope, scratch);
     bcx.fcx.schedule_drop_mem(scope, scratch, drop_flags, ty);
 
-    DatumBlock::new(bcx, Datum::new_lvalue(scratch, drop_flags, ty))
+    let cleanup_kind = drop_flags.map_or(NoCleanup, |f| StackDropFlags(f));
+    DatumBlock::new(bcx, Datum::new_lvalue(scratch, cleanup_kind, ty))
 }
 
 /// Allocates temporary space on the stack using alloca() and returns a by-ref Datum pointing to
@@ -277,7 +298,7 @@ pub trait KindOps {
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
                               val: ValueRef,
-                              drop_flags: Option<ValueRef>,
+                              cleanup_kind: MoveCleanupKind,
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx>;
 
@@ -294,7 +315,7 @@ impl KindOps for Rvalue {
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
                               val: ValueRef,
-                              _drop_flags: Option<ValueRef>,
+                              _cleanup_kind: MoveCleanupKind,
                               _ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         // No cleanup is scheduled for an rvalue, so we don't have
@@ -319,26 +340,35 @@ impl KindOps for Lvalue {
     /// cleanup. If an @T lvalue is copied, we must increment the reference count.
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
-                              _val: ValueRef,
-                              drop_flags: Option<ValueRef>,
+                              val: ValueRef,
+                              cleanup_kind: MoveCleanupKind,
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
-        if let Some(drop_flags) = drop_flags {
-            for i in 0..glue::num_drop_flags(bcx, ty)
-            {
-                let flag = GEPi(bcx, drop_flags, &[i as usize]);
-                Store(bcx, C_bool(bcx.ccx(), false), flag);
+        match cleanup_kind {
+            NoCleanup => {
+                if bcx.fcx.type_needs_drop(ty) {
+                    // We don't know how to prevent the drop glue for this
+                    // lvalue from running.
+                    bcx.tcx().sess.bug("Moved out of NoCleanup lvalue");
+                }
+                bcx
+            }
+            StackDropFlags(drop_flags) => {
+                // Zero out drop flags so the dead value doesn't get dropped.
+                for i in 0..glue::num_drop_flags(bcx, ty)
+                {
+                    let flag = GEPi(bcx, drop_flags, &[i as usize]);
+                    Store(bcx, C_bool(bcx.ccx(), false), flag);
+                }
+                bcx
+            }
+            BoxDropFlag(drop_flag) => {
+                // Zero out the drop flag, then free the box.
+                Store(bcx, C_bool(bcx.ccx(), false), drop_flag);
+                glue::trans_exchange_free_ty(bcx, val, ty, DebugLoc::None)
             }
         }
-        else
-        {
-            //if bcx.fcx.type_needs_drop(ty)
-            //{
-            //    bcx.tcx().sess.bug("Moved out of undroppable lvalue");
-            // }
-        }
-        bcx
     }
 
     fn is_by_ref(&self) -> bool {
@@ -354,12 +384,12 @@ impl KindOps for Expr {
     fn post_store<'blk, 'tcx>(&self,
                               bcx: Block<'blk, 'tcx>,
                               val: ValueRef,
-                              drop_flags: Option<ValueRef>,
+                              cleanup_kind: MoveCleanupKind,
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         match *self {
-            LvalueExpr => Lvalue.post_store(bcx, val, drop_flags, ty),
-            RvalueExpr(ref r) => r.post_store(bcx, val, drop_flags, ty),
+            LvalueExpr => Lvalue.post_store(bcx, val, cleanup_kind, ty),
+            RvalueExpr(ref r) => r.post_store(bcx, val, cleanup_kind, ty),
         }
     }
 
@@ -380,7 +410,7 @@ impl<'tcx> Datum<'tcx, Rvalue> {
                       ty: Ty<'tcx>,
                       kind: RvalueMode)
                       -> Datum<'tcx, Rvalue> {
-        Datum { val: val, drop_flag: None, ty: ty, kind: Rvalue::new(kind) }
+        Datum { val: val, cleanup_kind: NoCleanup, ty: ty, kind: Rvalue::new(kind) }
     }
 
     /// Schedules a cleanup for this datum in the given scope. That means that this datum is no
@@ -405,8 +435,30 @@ impl<'tcx> Datum<'tcx, Rvalue> {
 
         match self.kind.mode {
             ByRef => {
-                add_rvalue_clean(ByRef, fcx, scope, self.val, self.ty);
-                DatumBlock::new(bcx, Datum::new_lvalue(self.val, None, self.ty))
+                let num_drop_flags = glue::num_drop_flags(bcx, self.ty);
+                let drop_flags = if num_drop_flags != 0 {
+                    let flags_type = Type::array(&Type::i1(bcx.ccx()), num_drop_flags);
+                    let flags_name = name.to_owned() + ".drop_flags";
+                    let flags_array = alloca(bcx, flags_type, &flags_name);
+                    Some(GEPi(bcx, flags_array, &[0, 0]))
+                } else {
+                    None
+                };
+
+                if let Some(drop_flags) = drop_flags
+                {
+                    for i in 0..glue::num_drop_flags(bcx, self.ty)
+                    {
+                        let flag = GEPi(bcx, drop_flags, &[i as usize]);
+                        Store(bcx, C_bool(bcx.ccx(), true), flag);
+                    }
+                    bcx.fcx.schedule_lifetime_end(scope, drop_flags);
+                }
+                fcx.schedule_lifetime_end(scope, self.val);
+                fcx.schedule_drop_mem(scope, self.val, drop_flags, self.ty);
+
+                let cleanup_kind = drop_flags.map_or(NoCleanup, |f| StackDropFlags(f));
+                DatumBlock::new(bcx, Datum::new_lvalue(self.val, cleanup_kind, self.ty))
             }
 
             ByValue => {
@@ -461,9 +513,9 @@ impl<'tcx> Datum<'tcx, Expr> {
         F: FnOnce(Datum<'tcx, Lvalue>) -> R,
         G: FnOnce(Datum<'tcx, Rvalue>) -> R,
     {
-        let Datum { val, drop_flag, ty, kind } = self;
+        let Datum { val, cleanup_kind, ty, kind } = self;
         match kind {
-            LvalueExpr => if_lvalue(Datum::new_lvalue(val, drop_flag, ty)),
+            LvalueExpr => if_lvalue(Datum::new_lvalue(val, cleanup_kind, ty)),
             RvalueExpr(Rvalue { mode: r }) => if_rvalue(Datum::new_rvalue(val, ty, r)),
         }
     }
@@ -536,7 +588,7 @@ impl<'tcx> Datum<'tcx, Expr> {
                     }
                     ByValue => {
                         let v = load_ty(bcx, l.val, l.ty);
-                        bcx = l.kind.post_store(bcx, l.val, l.drop_flag, l.ty);
+                        bcx = l.kind.post_store(bcx, l.val, l.cleanup_kind, l.ty);
                         DatumBlock::new(bcx, Datum::new_rvalue(v, l.ty, ByValue))
                     }
                 }
@@ -552,10 +604,10 @@ impl<'tcx> Datum<'tcx, Expr> {
 /// from an array.
 impl<'tcx> Datum<'tcx, Lvalue> {
     pub fn new_lvalue(val: ValueRef,
-                      drop_flag : Option<ValueRef>,
+                      cleanup_kind : MoveCleanupKind,
                       ty: Ty<'tcx>)
                       -> Datum<'tcx, Lvalue> {
-        Datum { val: val, drop_flag: drop_flag, ty: ty, kind: Lvalue }
+        Datum { val: val, cleanup_kind: cleanup_kind, ty: ty, kind: Lvalue }
     }
 
     /// Converts a datum into a by-ref value. The datum type must be one which is always passed by
@@ -579,10 +631,11 @@ impl<'tcx> Datum<'tcx, Lvalue> {
             Load(bcx, expr::get_dataptr(bcx, self.val))
         };
         val = adt::trans_field_ptr(bcx, repr_ptr, val, discr, ix);
-        let drop_flags = self.drop_flag.map(|f| {
-            glue::offset_drop_flag(bcx, repr_ptr, f, discr, ix)
-        });
-        Datum::new_lvalue(val, drop_flags, ty)
+        let cleanup_kind = match self.cleanup_kind {
+            NoCleanup | BoxDropFlag(_) => NoCleanup,
+            StackDropFlags(f) => StackDropFlags(glue::offset_drop_flag(bcx, repr_ptr, f, discr, ix))
+        };
+        Datum::new_lvalue(val, cleanup_kind, ty)
     }
 
     pub fn get_vec_base_and_len<'blk>(&self, bcx: Block<'blk, 'tcx>)
@@ -596,8 +649,8 @@ impl<'tcx> Datum<'tcx, Lvalue> {
 /// Generic methods applicable to any sort of datum.
 impl<'tcx, K: KindOps + fmt::Debug> Datum<'tcx, K> {
     pub fn to_expr_datum(self) -> Datum<'tcx, Expr> {
-        let Datum { val, drop_flag, ty, kind } = self;
-        Datum { val: val, drop_flag: drop_flag, ty: ty, kind: kind.to_expr_kind() }
+        let Datum { val, cleanup_kind, ty, kind } = self;
+        Datum { val: val, cleanup_kind: cleanup_kind, ty: ty, kind: kind.to_expr_kind() }
     }
 
     /// Moves or copies this value into a new home, as appropriate depending on the type of the
@@ -609,7 +662,7 @@ impl<'tcx, K: KindOps + fmt::Debug> Datum<'tcx, K> {
                           -> Block<'blk, 'tcx> {
         self.shallow_copy_raw(bcx, dst);
 
-        self.kind.post_store(bcx, self.val, self.drop_flag, self.ty)
+        self.kind.post_store(bcx, self.val, self.cleanup_kind, self.ty)
     }
 
     /// Helper function that performs a shallow copy of this value into `dst`, which should be a

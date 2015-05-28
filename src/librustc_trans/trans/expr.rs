@@ -228,7 +228,7 @@ pub fn trans<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             let const_ty = expr_ty_adjusted(bcx, expr);
             let llty = type_of::type_of(bcx.ccx(), const_ty);
             let global = PointerCast(bcx, global, llty.ptr_to());
-            let datum = Datum::new_lvalue(global, None, const_ty);
+            let datum = Datum::new_lvalue(global, NoCleanup, const_ty);
             return DatumBlock::new(bcx, datum.to_expr_datum());
         }
 
@@ -728,7 +728,7 @@ fn trans_field<'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
 
             // Always generate an lvalue datum, because this pointer doesn't own
             // the data and cleanup is scheduled elsewhere.
-            DatumBlock::new(bcx, Datum::new_lvalue(scratch.val, None, scratch.ty))
+            DatumBlock::new(bcx, Datum::new_lvalue(scratch.val, NoCleanup, scratch.ty))
         }
     })
 
@@ -805,9 +805,9 @@ fn trans_index<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                                Some(SaveIn(scratch.val)),
                                                false));
             if type_is_sized(bcx.tcx(), elt_ty) {
-                Datum::new_lvalue(scratch.to_llscalarish(bcx), None, elt_ty)
+                Datum::new_lvalue(scratch.to_llscalarish(bcx), NoCleanup, elt_ty)
             } else {
-                Datum::new_lvalue(scratch.val, None, elt_ty)
+                Datum::new_lvalue(scratch.val, NoCleanup, elt_ty)
             }
         }
         None => {
@@ -861,8 +861,7 @@ fn trans_index<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             });
             let elt = InBoundsGEP(bcx, base, &[ix_val]);
             let elt = PointerCast(bcx, elt, type_of::type_of(ccx, unit_ty).ptr_to());
-            let drop_flags = None;
-            Datum::new_lvalue(elt, drop_flags, unit_ty)
+            Datum::new_lvalue(elt, NoCleanup, unit_ty)
         }
     };
 
@@ -907,7 +906,7 @@ fn trans_def<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 // Case 2.
                 base::get_extern_const(bcx.ccx(), did, const_ty)
             };
-            DatumBlock::new(bcx, Datum::new_lvalue(val, None, const_ty).to_expr_datum())
+            DatumBlock::new(bcx, Datum::new_lvalue(val, NoCleanup, const_ty).to_expr_datum())
         }
         def::DefConst(_) => {
             bcx.sess().span_bug(ref_expr.span,
@@ -996,21 +995,27 @@ fn trans_rvalue_stmt_unadjusted<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 debuginfo::set_source_location(bcx.fcx, expr.id, expr.span);
                 let src_datum = unpack_datum!(
                     bcx, src_datum.to_rvalue_datum(bcx, "ExprAssign"));
+                let drop_flags = match dst_datum.cleanup_kind {
+                    StackDropFlags(drop_flags) => Some(drop_flags),
+                    _ => None
+                };
+                // FIXME: This doesn't handle drop flags correctly
+                // if drop() panics.
                 bcx = glue::drop_ty(bcx,
                                     dst_datum.val,
-                                    dst_datum.drop_flag,
+                                    drop_flags,
                                     dst_datum.ty,
                                     expr.debug_loc());
                 bcx = src_datum.store_to(bcx, dst_datum.val);
 
                 // Initialize the drop flags.
-                // FIXME: maybe store_to should take a datum, so we can handle
-                // this there?
-                if let Some(drop_flags) = dst_datum.drop_flag {
-                    for i in 0..glue::num_drop_flags(bcx, dst_datum.ty)
-                    {
-                        let flag = GEPi(bcx, drop_flags, &[i as usize]);
-                        Store(bcx, C_bool(bcx.ccx(), true), flag);
+                match dst_datum.cleanup_kind {
+                    NoCleanup | BoxDropFlag(_) => {}
+                    StackDropFlags(drop_flags) => {
+                        for i in 0..glue::num_drop_flags(bcx, dst_datum.ty) {
+                            let flag = GEPi(bcx, drop_flags, &[i as usize]);
+                            Store(bcx, C_bool(bcx.ccx(), true), flag);
+                        }
                     }
                 }
                 bcx
@@ -2261,38 +2266,40 @@ fn deref_once<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             // proper cleanups scheduled
             let datum = unpack_datum!(
                 bcx, datum.to_lvalue_datum(bcx, "deref", expr.id));
-            let drop_flags = None;
 
             if type_is_sized(bcx.tcx(), content_ty) {
                 let ptr = load_ty(bcx, datum.val, datum.ty);
-                DatumBlock::new(bcx, Datum::new_lvalue(ptr, drop_flags, content_ty))
+                let cleanup_kind = match datum.cleanup_kind {
+                    NoCleanup | BoxDropFlag(_) => NoCleanup,
+                    StackDropFlags(f) => BoxDropFlag(f)
+                };
+                DatumBlock::new(bcx, Datum::new_lvalue(ptr, cleanup_kind, content_ty))
             } else {
                 // A fat pointer and a DST lvalue have the same representation
-                // just different types. Since there is no temporary for `*e`
+                // just different types.
+                // We can't make a temporary for `*e` because it is unsized,
+                // so can't clean it up.  Since there is no temporary for `*e`
                 // here (because it is unsized), we cannot emulate the sized
                 // object code path for running drop glue and free. Instead,
                 // we schedule cleanup for `e`, turning it into an lvalue.
 
-                let datum = Datum::new_lvalue(datum.val, drop_flags, content_ty);
+                let datum = Datum::new_lvalue(datum.val, NoCleanup, content_ty);
                 DatumBlock::new(bcx, datum)
             }
         }
 
         ty::ty_ptr(ty::mt { ty: content_ty, .. }) |
         ty::ty_rptr(_, ty::mt { ty: content_ty, .. }) => {
+            // We don't have to worry about cleanups here; it isn't possible
+            // to move out of a pointer dereference, so any necessary cleanup
+            // is already scheduled elsewhere.
             if type_is_sized(bcx.tcx(), content_ty) {
                 let ptr = datum.to_llscalarish(bcx);
-
-                // Always generate an lvalue datum, even if datum.mode is
-                // an rvalue.  This is because datum.mode is only an
-                // rvalue for non-owning pointers like &T or *T, in which
-                // case cleanup *is* scheduled elsewhere, by the true
-                // owner (or, in the case of *T, by the user).
-                DatumBlock::new(bcx, Datum::new_lvalue(ptr, None, content_ty))
+                DatumBlock::new(bcx, Datum::new_lvalue(ptr, NoCleanup, content_ty))
             } else {
                 // A fat pointer and a DST lvalue have the same representation
                 // just different types.
-                DatumBlock::new(bcx, Datum::new_lvalue(datum.val, None, content_ty))
+                DatumBlock::new(bcx, Datum::new_lvalue(datum.val, NoCleanup, content_ty))
             }
         }
 

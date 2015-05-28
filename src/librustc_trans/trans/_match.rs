@@ -652,7 +652,7 @@ fn extract_variant_args<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 /// an lvalue, into a Datum. Eventually we should just pass around a Datum and be done with it.
 fn match_datum<'tcx>(val: ValueRef, left_ty: Ty<'tcx>) -> Datum<'tcx, Lvalue> {
     // FIXME: Delete
-    Datum::new_lvalue(val, None, left_ty)
+    Datum::new_lvalue(val, NoCleanup, left_ty)
 }
 
 fn bind_subslice_pat(bcx: Block,
@@ -900,7 +900,7 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             // into the matched value and copy to our alloca
             TrByCopy(llbinding) => {
                 let llval = Load(bcx, binding_info.llmatch);
-                let datum = Datum::new_lvalue(llval, None, binding_info.ty);
+                let datum = Datum::new_lvalue(llval, NoCleanup, binding_info.ty);
                 call_lifetime_start(bcx, llbinding);
                 bcx = datum.store_to(bcx, llbinding);
                 if let Some(cs) = cs {
@@ -917,12 +917,10 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             TrByRef => binding_info.llmatch
         };
 
-        // FIXME: lifetime
-        let drop_flags = None;
-        let datum = Datum::new_lvalue(llval, drop_flags, binding_info.ty);
+        let datum = Datum::new_lvalue(llval, NoCleanup, binding_info.ty);
         if let Some(cs) = cs {
             bcx.fcx.schedule_lifetime_end(cs, binding_info.llmatch);
-            bcx.fcx.schedule_drop_mem(cs, llval, drop_flags, binding_info.ty);
+            bcx.fcx.schedule_drop_mem(cs, llval, None, binding_info.ty);
         }
 
         debug!("binding {} to {}", binding_info.id, bcx.val_to_string(llval));
@@ -1637,7 +1635,7 @@ pub fn store_arg<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                 // FIXME: Need to manufacture lifetime flags.
                 let arg_val = arg.add_clean(bcx.fcx, arg_scope);
                 bcx.fcx.lllocals.borrow_mut()
-                   .insert(pat.id, Datum::new_lvalue(arg_val, None, arg_ty));
+                   .insert(pat.id, Datum::new_lvalue(arg_val, NoCleanup, arg_ty));
                 bcx
             } else {
                 mk_binding_alloca(
@@ -1720,7 +1718,8 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                             ast::BindByValue(_) => {
                                 // By value binding: move the value that `val`
                                 // points at into the binding's stack slot.
-                                let d = Datum::new_lvalue(val, None, ty);
+                                // FIXME: NoCleanup is very, very wrong.
+                                let d = Datum::new_lvalue(val, NoCleanup, ty);
                                 (d.store_to(bcx, llval), true)
                             }
 
