@@ -804,11 +804,10 @@ fn trans_index<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                                vec![(ix_datum, idx.id)],
                                                Some(SaveIn(scratch.val)),
                                                false));
-            let datum = scratch.to_expr_datum();
             if type_is_sized(bcx.tcx(), elt_ty) {
-                Datum::new_lvalue(datum.to_llscalarish(bcx), None, elt_ty)
+                Datum::new_lvalue(scratch.to_llscalarish(bcx), None, elt_ty)
             } else {
-                Datum::new_lvalue(datum.val, None, elt_ty)
+                Datum::new_lvalue(scratch.val, None, elt_ty)
             }
         }
         None => {
@@ -862,7 +861,8 @@ fn trans_index<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             });
             let elt = InBoundsGEP(bcx, base, &[ix_val]);
             let elt = PointerCast(bcx, elt, type_of::type_of(ccx, unit_ty).ptr_to());
-            Datum::new_lvalue(elt, None, unit_ty)
+            let drop_flags = base_datum.drop_flag.map(|f| InBoundsGEP(bcx, f, &[Mul(bcx, ix_val, C_uint(bcx.ccx(), glue::num_drop_flags(bcx, unit_ty)), DebugLoc::None)]));
+            Datum::new_lvalue(elt, drop_flags, unit_ty)
         }
     };
 
@@ -1001,7 +1001,19 @@ fn trans_rvalue_stmt_unadjusted<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                     dst_datum.drop_flag,
                                     dst_datum.ty,
                                     expr.debug_loc());
-                src_datum.store_to(bcx, dst_datum.val)
+                bcx = src_datum.store_to(bcx, dst_datum.val);
+
+                // Initialize the drop flags.
+                // FIXME: maybe store_to should take a datum, so we can handle
+                // this there?
+                if let Some(drop_flags) = dst_datum.drop_flag {
+                    for i in 0..glue::num_drop_flags(bcx, dst_datum.ty)
+                    {
+                        let flag = GEPi(bcx, drop_flags, &[i as usize]);
+                        Store(bcx, C_bool(bcx.ccx(), true), flag);
+                    }
+                }
+                bcx
             } else {
                 src_datum.store_to(bcx, dst_datum.val)
             }
@@ -2249,10 +2261,11 @@ fn deref_once<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             // proper cleanups scheduled
             let datum = unpack_datum!(
                 bcx, datum.to_lvalue_datum(bcx, "deref", expr.id));
+            let drop_flags = datum.drop_flag.map(|f| GEPi(bcx, f, &[1]));
 
             if type_is_sized(bcx.tcx(), content_ty) {
                 let ptr = load_ty(bcx, datum.val, datum.ty);
-                DatumBlock::new(bcx, Datum::new_lvalue(ptr, None, content_ty))
+                DatumBlock::new(bcx, Datum::new_lvalue(ptr, drop_flags, content_ty))
             } else {
                 // A fat pointer and a DST lvalue have the same representation
                 // just different types. Since there is no temporary for `*e`
@@ -2260,7 +2273,7 @@ fn deref_once<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 // object code path for running drop glue and free. Instead,
                 // we schedule cleanup for `e`, turning it into an lvalue.
 
-                let datum = Datum::new_lvalue(datum.val, None, content_ty);
+                let datum = Datum::new_lvalue(datum.val, drop_flags, content_ty);
                 DatumBlock::new(bcx, datum)
             }
         }

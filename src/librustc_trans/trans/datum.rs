@@ -205,7 +205,7 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
     F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> (Block<'blk, 'tcx>, bool),
 {
     let scratch = alloc_ty(bcx, ty, name);
-    let drop_flags_type = Type::array(&Type::i1(bcx.ccx()), glue::num_drop_flags(bcx.tcx(), ty));
+    let drop_flags_type = Type::array(&Type::i1(bcx.ccx()), glue::num_drop_flags(bcx, ty));
     let mut drop_flags_name = name.to_owned();
     drop_flags_name.push_str(".drop_flags");
     let drop_flags = alloca(bcx, drop_flags_type, &drop_flags_name);
@@ -213,7 +213,7 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
 
     // Subtle. Populate the scratch memory *before* scheduling cleanup.
     let (bcx, initialized) = populate(arg, bcx, scratch);
-    for i in 0..glue::num_drop_flags(bcx.tcx(), ty)
+    for i in 0..glue::num_drop_flags(bcx, ty)
     {
         let flag = GEPi(bcx, drop_flags, &[i as usize]);
         Store(bcx, C_bool(bcx.ccx(), initialized), flag);
@@ -318,7 +318,7 @@ impl KindOps for Lvalue {
                               -> Block<'blk, 'tcx> {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
         if let Some(drop_flags) = drop_flags {
-            for i in 0..glue::num_drop_flags(bcx.tcx(), ty)
+            for i in 0..glue::num_drop_flags(bcx, ty)
             {
                 let flag = GEPi(bcx, drop_flags, &[i as usize]);
                 Store(bcx, C_bool(bcx.ccx(), false), flag);
@@ -326,10 +326,10 @@ impl KindOps for Lvalue {
         }
         else
         {
-            if bcx.fcx.type_needs_drop(ty)
-            {
-                bcx.tcx().sess.bug("Moved out of undroppable lvalue");
-            }
+            //if bcx.fcx.type_needs_drop(ty)
+            //{
+            //    bcx.tcx().sess.bug("Moved out of undroppable lvalue");
+            // }
         }
         bcx
     }

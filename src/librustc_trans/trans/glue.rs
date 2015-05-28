@@ -45,7 +45,7 @@ use arena::TypedArena;
 use libc::c_uint;
 use syntax::ast;
 
-pub fn num_drop_flags<'tcx>(tcx: &ty::ctxt<'tcx>, ty: Ty<'tcx>) -> u64
+pub fn num_drop_flags<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, ty: Ty<'tcx>) -> u64
 {
     // FIXME: It's possible that the current semantics of `match` constructs
     // isn't actually what we want... limiting situations where partial moves
@@ -54,45 +54,45 @@ pub fn num_drop_flags<'tcx>(tcx: &ty::ctxt<'tcx>, ty: Ty<'tcx>) -> u64
     match ty.sty {
         // One drop flag for the allocation, and some number for the contents.
         // FIXME: See above about partial moves.
-        ty::ty_uniq(content_ty) => 1 + num_drop_flags(tcx, content_ty),
+        ty::ty_uniq(content_ty) => 1 + num_drop_flags(bcx, monomorphize_type(bcx, content_ty)),
 
         // Traits objects are opaque, so there's exactly one drop flag.
         ty::ty_trait(..) => 1,
 
         ty::ty_struct(did, substs)  => {
-            if ty::has_dtor(tcx, did)
+            if ty::has_dtor(bcx.tcx(), did)
             {
                 // Structs which implement drop are treated as a single object.
                 1
             } else {
                 // Allocate enough drop flags to handle partial moves.
-                let fields = ty::struct_fields(tcx, did, substs);
-                fields.iter().map(|f| num_drop_flags(tcx, f.mt.ty)).sum()
+                let fields = ty::struct_fields(bcx.tcx(), did, substs);
+                fields.iter().map(|f| num_drop_flags(bcx, monomorphize_type(bcx, f.mt.ty))).sum()
             }
         }
 
         ty::ty_enum(did, substs) => {
-            if ty::has_dtor(tcx, did) {
+            if ty::has_dtor(bcx.tcx(), did) {
                 // Enums which implement drop are treated as a single object.
                 1
             } else {
                 // Make sure we have enough drop flags for the biggest variant.
                 // FIXME: See above about partial moves.
-                let enum_variants = ty::substd_enum_variants(tcx, did, substs);
+                let enum_variants = ty::substd_enum_variants(bcx.tcx(), did, substs);
                 enum_variants.iter().map(|variant| {
-                    variant.args.iter().map(|arg| num_drop_flags(tcx, arg)).sum()
+                    variant.args.iter().map(|arg| num_drop_flags(bcx, monomorphize_type(bcx, arg))).sum()
                 }).max().unwrap_or(0)
             }
         }
 
         ty::ty_tup(ref tys) => {
             // Allocate enough drop flags to handle partial moves.
-            tys.iter().map(|ty| num_drop_flags(tcx, ty)).sum()
+            tys.iter().map(|ty| num_drop_flags(bcx, monomorphize_type(bcx, ty))).sum()
         }
 
         // Each component of a slice needs to be tracked separately.
         // FIXME: See above about partial moves.
-        ty::ty_vec(ty, Some(len)) => num_drop_flags(tcx, ty) * len as u64,
+        ty::ty_vec(ty, Some(len)) => num_drop_flags(bcx, monomorphize_type(bcx, ty)) * len as u64,
 
         ty::ty_vec(_, None) |
         ty::ty_str => panic!("Variables of slice type don't exist"),
@@ -141,7 +141,7 @@ pub fn offset_drop_flag<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, r: &adt::Repr<'tcx>,
         }
     };
     // FIXME: Cache this?
-    let offset: u64 = fields.iter().take(ix).map(|t| num_drop_flags(bcx.tcx(), t)).sum();
+    let offset: u64 = fields.iter().take(ix).map(|t| num_drop_flags(bcx, t)).sum();
     GEPi(bcx, drop_flags, &[offset as usize])
 }
 
@@ -249,7 +249,7 @@ pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         let g = if skip_dtor {
             DropGlueKind::TyContents(t)
         } else if let Some(_) = drop_flags {
-             DropGlueKind::TyContentsFlag(t)
+            DropGlueKind::DtorFlag(t)
         } else {
             DropGlueKind::Dtor(t)
         };
@@ -264,7 +264,7 @@ pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         if let Some(drop_flags) = drop_flags {
             Call(bcx, glue, &[ptr, drop_flags], None, debug_loc);
         } else {
-             Call(bcx, glue, &[ptr], None, debug_loc); 
+            Call(bcx, glue, &[ptr], None, debug_loc); 
         };
         
     }
@@ -293,19 +293,18 @@ pub enum DropGlueKind<'tcx> {
     /// Skips the dtor, if any; just drops the contents directly.  This is
     /// used in other glue routines.
     TyContents(Ty<'tcx>),
-    /// Drops the fields conditionally based on the provided drop flag array.
-    /// This is used for stack variables of types which don't implement Drop.
-    TyContentsFlag(Ty<'tcx>),
-    /// Runs the drop routine, and then recursively drops the contents, like
-    /// a C++ destructor.
+    /// Runs the drop routine, if any, and then recursively drops the contents,
+    /// like a C++ destructor.
     Dtor(Ty<'tcx>),
+    /// Drop conditionally using the drop flag array.
+    DtorFlag(Ty<'tcx>),
 }
 
 impl<'tcx> DropGlueKind<'tcx> {
     fn ty(&self) -> Ty<'tcx> {
         match *self {
             DropGlueKind::Dtor(t) | DropGlueKind::TyContents(t) |
-            DropGlueKind::TyContentsFlag(t) => t
+            DropGlueKind::DtorFlag(t) => t
         }
     }
 
@@ -314,7 +313,7 @@ impl<'tcx> DropGlueKind<'tcx> {
         match *self {
             DropGlueKind::Dtor(t) => DropGlueKind::Dtor(f(t)),
             DropGlueKind::TyContents(t) => DropGlueKind::TyContents(f(t)),
-            DropGlueKind::TyContentsFlag(t) => DropGlueKind::TyContentsFlag(f(t)),
+            DropGlueKind::DtorFlag(t) => DropGlueKind::DtorFlag(f(t)),
         }
     }
 
@@ -323,7 +322,7 @@ impl<'tcx> DropGlueKind<'tcx> {
         match *self {
             DropGlueKind::Dtor(_) => format!("DropGlueKind::Dtor({})", t_str),
             DropGlueKind::TyContents(_) => format!("DropGlueKind::TyContents({})", t_str),
-            DropGlueKind::TyContentsFlag(_) => format!("DropGlueKind::TyContentsFlag({})", t_str),
+            DropGlueKind::DtorFlag(_) => format!("DropGlueKind::DtorFlag({})", t_str),
         }
     }
 }
@@ -346,7 +345,7 @@ fn get_drop_glue_core<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     };
     let llfnty = match g {
         DropGlueKind::Dtor(_) | DropGlueKind::TyContents(_) => Type::func(&[llty], &Type::void(ccx)),
-        DropGlueKind::TyContentsFlag(_) => Type::func(&[llty, Type::bool(ccx).ptr_to()], &Type::void(ccx))
+        DropGlueKind::DtorFlag(_) => Type::func(&[llty, Type::i1(ccx).ptr_to()], &Type::void(ccx))
     };
 
     // To avoid infinite recursion, don't `make_drop_glue` until after we've
@@ -386,7 +385,7 @@ fn get_drop_glue_core<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     // type, so we don't need to explicitly cast the function parameter.
 
     let llrawptr0 = get_param(llfn, fcx.arg_pos(0) as c_uint);
-    let drop_flags = if let DropGlueKind::TyContentsFlag(_) = g {
+    let drop_flags = if let DropGlueKind::DtorFlag(_) = g {
         Some(get_param(llfn, fcx.arg_pos(1) as c_uint))
     } else {
         None
@@ -537,7 +536,7 @@ pub fn size_and_align_of_dst<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, t: Ty<'tcx>, in
 fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, drop_flags: Option<ValueRef>, g: DropGlueKind<'tcx>)
                               -> Block<'blk, 'tcx> {
     let t = g.ty();
-    let skip_dtor = if let DropGlueKind::Dtor(_) = g { false } else { true };
+    let skip_dtor = if let DropGlueKind::TyContents(_) = g { true } else { false };
     // NB: v0 is an *alias* of type t here, not a direct value.
     let _icx = push_ctxt("make_drop_glue");
 
@@ -578,15 +577,17 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, drop_flags: 
         }
         ty::ty_struct(did, substs) | ty::ty_enum(did, substs) => {
             let tcx = bcx.tcx();
-            match (ty::ty_dtor(tcx, did), g) {
-                (ty::TraitDtor(dtor), DropGlueKind::Dtor(_)) => {
+            match (ty::ty_dtor(tcx, did), g, drop_flags) {
+                (ty::TraitDtor(dtor), _, Some(drop_flags)) => {
+                    let drop_flag_check = Load(bcx, drop_flags);
+                    with_cond(bcx, drop_flag_check, |bcx| {
+                        trans_struct_drop(bcx, t, v0, dtor, did, substs)
+                    })
+                }
+                (ty::TraitDtor(dtor), DropGlueKind::Dtor(_), None) => {
                     trans_struct_drop(bcx, t, v0, dtor, did, substs)
                 }
-                (_, DropGlueKind::TyContentsFlag(_)) => {
-                    iter_structural_ty(bcx, v0, drop_flags, t, |bb, vv, df, tt| drop_ty(bb, vv, df, tt, DebugLoc::None))
-                }
                 _ => {
-                    // No dtor? Just the default case
                     iter_structural_ty(bcx, v0, drop_flags, t, |bb, vv, df, tt| drop_ty(bb, vv, df, tt, DebugLoc::None))
                 }
             }
