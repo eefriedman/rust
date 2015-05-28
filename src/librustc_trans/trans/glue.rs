@@ -51,6 +51,10 @@ pub fn num_drop_flags<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, ty: Ty<'tcx>) -> u64
     // isn't actually what we want... limiting situations where partial moves
     // are allowed would substantially reduce the size of flag arrays.
 
+    if !bcx.fcx.type_needs_drop(ty) {
+        return 0;
+    }
+
     match ty.sty {
         // One drop flag for the allocation and contents.
         // FIXME: Box pattern matching needs to be updated to match this.
@@ -93,14 +97,15 @@ pub fn num_drop_flags<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, ty: Ty<'tcx>) -> u64
             tys.iter().map(|ty| num_drop_flags(bcx, monomorphize_type(bcx, ty))).sum()
         }
 
-        // One drop flag for the whole slice.
+        // One drop flag for the whole slice, if the contents need to be dropped.
         // FIXME: Slice pattern matching needs to be updated to match this.
         ty::ty_vec(_, Some(_)) => 1,
 
         ty::ty_vec(_, None) |
         ty::ty_str => panic!("Variables of slice type don't exist"),
 
-        // It is not possible to partially move out of a closure.
+        // One drop flag for the whole closure, if the contents need
+        // to be dropped.
         ty::ty_closure(..) => 1,
 
         // Primitive types which don't need to be dropped.
@@ -473,6 +478,38 @@ fn trans_struct_drop<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     bcx.fcx.pop_and_trans_custom_cleanup_scope(bcx, contents_scope)
 }
 
+fn trans_box_drop<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
+                              content_ty: Ty<'tcx>,
+                              v0: ValueRef)
+                              -> Block<'blk, 'tcx>
+{
+    debug!("trans_box_drop content_ty: {}", bcx.ty_to_string(content_ty));
+
+    if !type_is_sized(bcx.tcx(), content_ty) {
+        let llval = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
+        let llbox = Load(bcx, llval);
+        let bcx = drop_ty(bcx, v0, None, content_ty, DebugLoc::None);
+        let info = GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]);
+        let info = Load(bcx, info);
+        let (llsize, llalign) = size_and_align_of_dst(bcx, content_ty, info);
+
+        // `Box<ZeroSizeType>` does not allocate.
+        let needs_free = ICmp(bcx,
+                                llvm::IntNE,
+                                llsize,
+                                C_uint(bcx.ccx(), 0u64),
+                                DebugLoc::None);
+        with_cond(bcx, needs_free, |bcx| {
+            trans_exchange_free_dyn(bcx, llbox, llsize, llalign, DebugLoc::None)
+        })
+    } else {
+        let llval = v0;
+        let llbox = Load(bcx, llval);
+        let bcx = drop_ty(bcx, llbox, None, content_ty, DebugLoc::None);
+        trans_exchange_free_ty(bcx, llbox, content_ty, DebugLoc::None)
+    }
+}
+
 pub fn size_and_align_of_dst<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, t: Ty<'tcx>, info: ValueRef)
                                          -> (ValueRef, ValueRef) {
     debug!("calculate size of DST: {}; with lost info: {}",
@@ -536,6 +573,18 @@ pub fn size_and_align_of_dst<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, t: Ty<'tcx>, in
     }
 }
 
+fn maybe_with_drop_flag<'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
+                                       drop_flags: Option<ValueRef>,
+                                       f: F)
+                                       -> Block<'blk, 'tcx>
+                                       where F: FnOnce(Block<'blk, 'tcx>) -> Block<'blk, 'tcx>
+{
+    match drop_flags {
+        Some(drop_flags) => with_cond(bcx, Load(bcx, drop_flags), f),
+        None => f(bcx)
+    }
+}
+
 fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, drop_flags: Option<ValueRef>, g: DropGlueKind<'tcx>)
                               -> Block<'blk, 'tcx> {
     let t = g.ty();
@@ -550,76 +599,73 @@ fn make_drop_glue<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, v0: ValueRef, drop_flags: 
 
     match t.sty {
         ty::ty_uniq(content_ty) => {
-            // Support for ty_uniq is built-in and its drop glue is
-            // special. It may move to library and have Drop impl. As
-            // a safe-guard, assert ty_uniq not used with TyContents.
+            // Boxes have exactly one drop flag.
+            // FIXME: This leaks the box if drop() panics.
             assert!(!skip_dtor);
-            if !type_is_sized(bcx.tcx(), content_ty) {
-                let llval = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
-                let llbox = Load(bcx, llval);
-                let bcx = drop_ty(bcx, v0, None, content_ty, DebugLoc::None);
-                let info = GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]);
-                let info = Load(bcx, info);
-                let (llsize, llalign) = size_and_align_of_dst(bcx, content_ty, info);
-
-                // `Box<ZeroSizeType>` does not allocate.
-                let needs_free = ICmp(bcx,
-                                      llvm::IntNE,
-                                      llsize,
-                                      C_uint(bcx.ccx(), 0u64),
-                                      DebugLoc::None);
-                with_cond(bcx, needs_free, |bcx| {
-                    trans_exchange_free_dyn(bcx, llbox, llsize, llalign, DebugLoc::None)
-                })
-            } else {
-                let llval = v0;
-                let llbox = Load(bcx, llval);
-                let bcx = drop_ty(bcx, llbox, None, content_ty, DebugLoc::None);
-                trans_exchange_free_ty(bcx, llbox, content_ty, DebugLoc::None)
-            }
+            maybe_with_drop_flag(bcx, drop_flags, |bcx| {
+                trans_box_drop(bcx, content_ty, v0)
+            })
         }
         ty::ty_struct(did, substs) | ty::ty_enum(did, substs) => {
             let tcx = bcx.tcx();
-            match (ty::ty_dtor(tcx, did), g, drop_flags) {
-                (ty::TraitDtor(dtor), _, Some(drop_flags)) => {
-                    let drop_flag_check = Load(bcx, drop_flags);
-                    with_cond(bcx, drop_flag_check, |bcx| {
+            match (ty::ty_dtor(tcx, did), skip_dtor) {
+                (ty::TraitDtor(dtor), false) => {
+                    maybe_with_drop_flag(bcx, drop_flags, |bcx| {
                         trans_struct_drop(bcx, t, v0, dtor, did, substs)
                     })
                 }
-                (ty::TraitDtor(dtor), DropGlueKind::Dtor(_), None) => {
-                    trans_struct_drop(bcx, t, v0, dtor, did, substs)
-                }
                 _ => {
-                    iter_structural_ty(bcx, v0, drop_flags, t, |bb, vv, df, tt| drop_ty(bb, vv, df, tt, DebugLoc::None))
+                    iter_structural_ty(bcx, v0, drop_flags, t, |bb, vv, df, tt| {
+                        drop_ty(bb, vv, df, tt, DebugLoc::None)
+                    })
                 }
             }
         }
         ty::ty_trait(..) => {
-            // No support in vtable for distinguishing destroying with
-            // versus without calling Drop::drop. Assert caller is
-            // okay with always calling the Drop impl, if any.
             assert!(!skip_dtor);
-            let data_ptr = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
-            let vtable_ptr = Load(bcx, GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]));
-            let dtor = Load(bcx, vtable_ptr);
-            Call(bcx,
-                 dtor,
-                 &[PointerCast(bcx, Load(bcx, data_ptr), Type::i8p(bcx.ccx()))],
-                 None,
-                 DebugLoc::None);
-            bcx
+            maybe_with_drop_flag(bcx, drop_flags, |bcx| {
+                let data_ptr = GEPi(bcx, v0, &[0, abi::FAT_PTR_ADDR]);
+                let vtable_ptr = Load(bcx, GEPi(bcx, v0, &[0, abi::FAT_PTR_EXTRA]));
+                let dtor = Load(bcx, vtable_ptr);
+                Call(bcx,
+                    dtor,
+                    &[PointerCast(bcx, Load(bcx, data_ptr), Type::i8p(bcx.ccx()))],
+                    None,
+                    DebugLoc::None);
+                bcx
+            })
         }
-        _ => {
+        ty::ty_closure(_, _) |
+        ty::ty_vec(..) => {
+            // Closures and arrays have at most one drop flag.
+            assert!(!skip_dtor);
             if bcx.fcx.type_needs_drop(t) {
-                iter_structural_ty(bcx,
-                                   v0,
-                                   drop_flags,
-                                   t,
-                                   |bb, vv, df, tt| drop_ty(bb, vv, df, tt, DebugLoc::None))
+                maybe_with_drop_flag(bcx, drop_flags, |bcx| {
+                    iter_structural_ty(bcx, v0, None, t, |bb, vv, df, tt| {
+                        drop_ty(bb, vv, df, tt, DebugLoc::None)
+                    })
+                })
             } else {
                 bcx
             }
+        }
+        ty::ty_tup(..) => {
+            // Tuples pass down the drop flags to their children.
+            assert!(!skip_dtor);
+            if bcx.fcx.type_needs_drop(t) {
+                iter_structural_ty(bcx, v0, drop_flags, t, |bb, vv, df, tt| {
+                    drop_ty(bb, vv, df, tt, DebugLoc::None)
+                })
+            } else {
+                bcx
+            }
+        }
+        _ => {
+            if bcx.fcx.type_needs_drop(t) {
+                bcx.sess().unimpl(&format!("type in make_drop_glue: {}",
+                                          ppaux::ty_to_string(bcx.tcx(), t)))
+            }
+            bcx
         }
     }
 }
