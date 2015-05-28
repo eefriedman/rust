@@ -861,7 +861,7 @@ fn trans_index<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             });
             let elt = InBoundsGEP(bcx, base, &[ix_val]);
             let elt = PointerCast(bcx, elt, type_of::type_of(ccx, unit_ty).ptr_to());
-            let drop_flags = base_datum.drop_flag.map(|f| InBoundsGEP(bcx, f, &[Mul(bcx, ix_val, C_uint(bcx.ccx(), glue::num_drop_flags(bcx, unit_ty)), DebugLoc::None)]));
+            let drop_flags = None;
             Datum::new_lvalue(elt, drop_flags, unit_ty)
         }
     };
@@ -2261,7 +2261,7 @@ fn deref_once<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             // proper cleanups scheduled
             let datum = unpack_datum!(
                 bcx, datum.to_lvalue_datum(bcx, "deref", expr.id));
-            let drop_flags = datum.drop_flag.map(|f| GEPi(bcx, f, &[1]));
+            let drop_flags = None;
 
             if type_is_sized(bcx.tcx(), content_ty) {
                 let ptr = load_ty(bcx, datum.val, datum.ty);

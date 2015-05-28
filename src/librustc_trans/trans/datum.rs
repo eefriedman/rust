@@ -205,24 +205,31 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
     F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> (Block<'blk, 'tcx>, bool),
 {
     let scratch = alloc_ty(bcx, ty, name);
-    let drop_flags_type = Type::array(&Type::i1(bcx.ccx()), glue::num_drop_flags(bcx, ty));
-    let mut drop_flags_name = name.to_owned();
-    drop_flags_name.push_str(".drop_flags");
-    let drop_flags = alloca(bcx, drop_flags_type, &drop_flags_name);
-    let drop_flags = GEPi(bcx, drop_flags, &[0, 0]);
+    let num_drop_flags = glue::num_drop_flags(bcx, ty);
+    let drop_flags = if num_drop_flags != 0 {
+        let flags_type = Type::array(&Type::i1(bcx.ccx()), num_drop_flags);
+        let flags_name = name.to_owned() + ".drop_flags";
+        let flags_array = alloca(bcx, flags_type, &flags_name);
+        Some(GEPi(bcx, flags_array, &[0, 0]))
+    } else {
+        None
+    };
 
     // Subtle. Populate the scratch memory *before* scheduling cleanup.
     let (bcx, initialized) = populate(arg, bcx, scratch);
-    for i in 0..glue::num_drop_flags(bcx, ty)
+    if let Some(drop_flags) = drop_flags
     {
-        let flag = GEPi(bcx, drop_flags, &[i as usize]);
-        Store(bcx, C_bool(bcx.ccx(), initialized), flag);
+        for i in 0..glue::num_drop_flags(bcx, ty)
+        {
+            let flag = GEPi(bcx, drop_flags, &[i as usize]);
+            Store(bcx, C_bool(bcx.ccx(), initialized), flag);
+        }
+        bcx.fcx.schedule_lifetime_end(scope, drop_flags);
     }
-    bcx.fcx.schedule_lifetime_end(scope, drop_flags);
     bcx.fcx.schedule_lifetime_end(scope, scratch);
-    bcx.fcx.schedule_drop_mem(scope, scratch, Some(drop_flags), ty);
+    bcx.fcx.schedule_drop_mem(scope, scratch, drop_flags, ty);
 
-    DatumBlock::new(bcx, Datum::new_lvalue(scratch, Some(drop_flags), ty))
+    DatumBlock::new(bcx, Datum::new_lvalue(scratch, drop_flags, ty))
 }
 
 /// Allocates temporary space on the stack using alloca() and returns a by-ref Datum pointing to

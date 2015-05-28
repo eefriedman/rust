@@ -52,9 +52,9 @@ pub fn num_drop_flags<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, ty: Ty<'tcx>) -> u64
     // are allowed would substantially reduce the size of flag arrays.
 
     match ty.sty {
-        // One drop flag for the allocation, and some number for the contents.
-        // FIXME: See above about partial moves.
-        ty::ty_uniq(content_ty) => 1 + num_drop_flags(bcx, monomorphize_type(bcx, content_ty)),
+        // One drop flag for the allocation and contents.
+        // FIXME: Box pattern matching needs to be updated to match this.
+        ty::ty_uniq(_) => 1,
 
         // Traits objects are opaque, so there's exactly one drop flag.
         ty::ty_trait(..) => 1,
@@ -77,7 +77,10 @@ pub fn num_drop_flags<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, ty: Ty<'tcx>) -> u64
                 1
             } else {
                 // Make sure we have enough drop flags for the biggest variant.
-                // FIXME: See above about partial moves.
+                // FIXME: Are the current match semantics a bug, or intentional?
+                // It's consistent with structs/tuples/etc. in some sense, but
+                // explcitly supporting the creation of values which are
+                // inaccessible, but not yet dropped, is a bit weird.
                 let enum_variants = ty::substd_enum_variants(bcx.tcx(), did, substs);
                 enum_variants.iter().map(|variant| {
                     variant.args.iter().map(|arg| num_drop_flags(bcx, monomorphize_type(bcx, arg))).sum()
@@ -90,9 +93,9 @@ pub fn num_drop_flags<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, ty: Ty<'tcx>) -> u64
             tys.iter().map(|ty| num_drop_flags(bcx, monomorphize_type(bcx, ty))).sum()
         }
 
-        // Each component of a slice needs to be tracked separately.
-        // FIXME: See above about partial moves.
-        ty::ty_vec(ty, Some(len)) => num_drop_flags(bcx, monomorphize_type(bcx, ty)) * len as u64,
+        // One drop flag for the whole slice.
+        // FIXME: Slice pattern matching needs to be updated to match this.
+        ty::ty_vec(_, Some(_)) => 1,
 
         ty::ty_vec(_, None) |
         ty::ty_str => panic!("Variables of slice type don't exist"),
