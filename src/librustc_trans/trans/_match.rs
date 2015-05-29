@@ -917,11 +917,12 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             TrByRef => binding_info.llmatch
         };
 
-        let datum = Datum::new_lvalue(llval, NoCleanup, binding_info.ty);
-        if let Some(cs) = cs {
-            bcx.fcx.schedule_lifetime_end(cs, binding_info.llmatch);
-            bcx.fcx.schedule_drop_mem(cs, llval, None, binding_info.ty);
-        }
+        let datum = if let Some(cs) = cs {
+            let rdatum = Datum::new_rvalue(llval, binding_info.ty, ByRef);
+            unpack_datum!(bcx, rdatum.to_lvalue_datum_in_scope(bcx, "patbind", cs))
+        } else {
+            Datum::new_lvalue(llval, NoCleanup, binding_info.ty)
+        };
 
         debug!("binding {} to {}", binding_info.id, bcx.val_to_string(llval));
         bcx.fcx.lllocals.borrow_mut().insert(binding_info.id, datum);
@@ -1597,7 +1598,7 @@ pub fn store_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 add_comment(bcx, "creating zeroable ref llval");
             }
             let var_scope = cleanup::var_scope(tcx, local.id);
-            bind_irrefutable_pat(bcx, pat, init_datum.val, var_scope)
+            bind_irrefutable_pat(bcx, pat, init_datum, var_scope)
         }
         None => {
             create_dummy_locals(bcx, pat)
@@ -1648,7 +1649,7 @@ pub fn store_arg<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             // pattern.
             let arg = unpack_datum!(
                 bcx, arg.to_lvalue_datum_in_scope(bcx, "__arg", arg_scope));
-            bind_irrefutable_pat(bcx, pat, arg.val, arg_scope)
+            bind_irrefutable_pat(bcx, pat, arg, arg_scope)
         }
     }
 }
@@ -1683,10 +1684,10 @@ fn mk_binding_alloca<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
 /// # Arguments
 /// - bcx: starting basic block context
 /// - pat: the irrefutable pattern being matched.
-/// - val: the value being matched -- must be an lvalue (by ref, with cleanup)
+/// - datum: the value being matched
 fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                     pat: &ast::Pat,
-                                    val: ValueRef,
+                                    datum: Datum<'tcx, Lvalue>,
                                     cleanup_scope: cleanup::ScopeId)
                                     -> Block<'blk, 'tcx> {
     debug!("bind_irrefutable_pat(bcx={}, pat={})",
@@ -1715,21 +1716,17 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                     |(), bcx, llval, ty| {
                         match pat_binding_mode {
                             ast::BindByValue(_) => {
-                                // By value binding: move the value that `val`
-                                // points at into the binding's stack slot.
-                                // FIXME: NoCleanup is very, very wrong.
-                                let d = Datum::new_lvalue(val, NoCleanup, ty);
-                                (d.store_to(bcx, llval), true)
+                                (datum.store_to(bcx, llval), true)
                             }
 
                             ast::BindByRef(_) => {
                                 // By ref binding: the value of the variable
                                 // is the pointer `val` itself or fat pointer referenced by `val`
                                 if type_is_fat_ptr(bcx.tcx(), ty) {
-                                    expr::copy_fat_ptr(bcx, val, llval);
+                                    expr::copy_fat_ptr(bcx, datum.to_llref(), llval);
                                 }
                                 else {
-                                    Store(bcx, val, llval);
+                                    Store(bcx, datum.to_llref(), llval);
                                 }
 
                                 (bcx, true)
@@ -1739,7 +1736,7 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             }
 
             if let Some(ref inner_pat) = *inner {
-                bcx = bind_irrefutable_pat(bcx, &**inner_pat, val, cleanup_scope);
+                bcx = bind_irrefutable_pat(bcx, &**inner_pat, datum, cleanup_scope);
             }
         }
         ast::PatEnum(_, ref sub_pats) => {
@@ -1750,14 +1747,11 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                     let vinfo = ty::enum_variant_with_id(ccx.tcx(),
                                                          enum_id,
                                                          var_id);
-                    let args = extract_variant_args(bcx,
-                                                    &*repr,
-                                                    &vinfo,
-                                                    val);
                     if let Some(ref sub_pat) = *sub_pats {
-                        for (i, &argval) in args.vals.iter().enumerate() {
-                            bcx = bind_irrefutable_pat(bcx, &*sub_pat[i],
-                                                       argval, cleanup_scope);
+                        for (i, sub_pat) in sub_pat.iter().enumerate() {
+                            let arg = datum.get_element(bcx, node_id_type(bcx, sub_pat.id), &repr, vinfo.disr_val, i);
+                            bcx = bind_irrefutable_pat(bcx, sub_pat,
+                                                       arg, cleanup_scope);
                         }
                     }
                 }
@@ -1770,10 +1764,9 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                             // This is the tuple struct case.
                             let repr = adt::represent_node(bcx, pat.id);
                             for (i, elem) in elems.iter().enumerate() {
-                                let fldptr = adt::trans_field_ptr(bcx, &*repr,
-                                                                  val, 0, i);
+                                let field = datum.get_element(bcx, node_id_type(bcx, elem.id), &repr, 0, i);
                                 bcx = bind_irrefutable_pat(bcx, &**elem,
-                                                           fldptr, cleanup_scope);
+                                                           field, cleanup_scope);
                             }
                         }
                     }
@@ -1790,35 +1783,41 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             expr::with_field_tys(tcx, pat_ty, Some(pat.id), |discr, field_tys| {
                 for f in fields {
                     let ix = ty::field_idx_strict(tcx, f.node.ident.name, field_tys);
-                    let fldptr = adt::trans_field_ptr(bcx, &*pat_repr, val,
-                                                      discr, ix);
-                    bcx = bind_irrefutable_pat(bcx, &*f.node.pat, fldptr, cleanup_scope);
+                    let field = datum.get_element(bcx, node_id_type(bcx, f.node.pat.id), &*pat_repr, discr, ix);
+                    bcx = bind_irrefutable_pat(bcx, &*f.node.pat, field, cleanup_scope);
                 }
             })
         }
         ast::PatTup(ref elems) => {
             let repr = adt::represent_node(bcx, pat.id);
             for (i, elem) in elems.iter().enumerate() {
-                let fldptr = adt::trans_field_ptr(bcx, &*repr, val, 0, i);
-                bcx = bind_irrefutable_pat(bcx, &**elem, fldptr, cleanup_scope);
+                let field = datum.get_element(bcx, node_id_type(bcx, elem.id), &*repr, 0, i);
+                bcx = bind_irrefutable_pat(bcx, &**elem, field, cleanup_scope);
             }
         }
         ast::PatBox(ref inner) => {
-            let llbox = Load(bcx, val);
-            bcx = bind_irrefutable_pat(bcx, &**inner, llbox, cleanup_scope);
+            let llbox = Load(bcx, datum.val);
+            let cleanup_kind = if let StackDropFlags(drop_flags) = datum.cleanup_kind {
+                BoxDropFlag(drop_flags)
+            } else {
+                NoCleanup
+            };
+            let box_datum = Datum::new_lvalue(llbox, cleanup_kind, node_id_type(bcx, inner.id));
+            bcx = bind_irrefutable_pat(bcx, &**inner, box_datum, cleanup_scope);
         }
         ast::PatRegion(ref inner, _) => {
-            let loaded_val = Load(bcx, val);
-            bcx = bind_irrefutable_pat(bcx, &**inner, loaded_val, cleanup_scope);
+            let loaded_val = Load(bcx, datum.val);
+            let loaded_datum = Datum::new_lvalue(loaded_val, NoCleanup, node_id_type(bcx, inner.id));
+            bcx = bind_irrefutable_pat(bcx, &**inner, loaded_datum, cleanup_scope);
         }
         ast::PatVec(ref before, ref slice, ref after) => {
             let pat_ty = node_id_type(bcx, pat.id);
-            let mut extracted = extract_vec_elems(bcx, pat_ty, before.len(), after.len(), val);
+            let mut extracted = extract_vec_elems(bcx, pat_ty, before.len(), after.len(), datum.val);
             match slice {
                 &Some(_) => {
                     extracted.vals.insert(
                         before.len(),
-                        bind_subslice_pat(bcx, pat.id, val, before.len(), after.len())
+                        bind_subslice_pat(bcx, pat.id, datum.val, before.len(), after.len())
                     );
                 }
                 &None => ()
@@ -1829,7 +1828,7 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 .chain(after.iter())
                 .zip(extracted.vals.into_iter())
                 .fold(bcx, |bcx, (inner, elem)|
-                    bind_irrefutable_pat(bcx, &**inner, elem, cleanup_scope)
+                    bind_irrefutable_pat(bcx, &**inner, Datum::new_lvalue(elem, NoCleanup, node_id_type(bcx, inner.id)), cleanup_scope)
                 );
         }
         ast::PatMac(..) => {

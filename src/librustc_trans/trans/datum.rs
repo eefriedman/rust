@@ -93,6 +93,7 @@ pub use self::Expr::*;
 pub use self::RvalueMode::*;
 pub use self::MoveCleanupKind::*;
 
+use llvm;
 use llvm::ValueRef;
 use trans::adt;
 use trans::base::*;
@@ -350,6 +351,7 @@ impl KindOps for Lvalue {
                 if bcx.fcx.type_needs_drop(ty) {
                     // We don't know how to prevent the drop glue for this
                     // lvalue from running.
+                    unsafe {llvm::LLVMDumpValue(llvm::LLVMGetBasicBlockParent(llvm::LLVMGetInstructionParent(val))); }
                     bcx.tcx().sess.bug("Moved out of NoCleanup lvalue");
                 }
                 bcx
