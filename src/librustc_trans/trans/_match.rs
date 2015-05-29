@@ -1632,10 +1632,9 @@ pub fn store_arg<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                 // Don't copy an indirect argument to an alloca, the caller
                 // already put it in a temporary alloca and gave it up, unless
                 // we emit extra-debug-info, which requires local allocas :(.
-                // FIXME: Need to manufacture lifetime flags.
-                let arg_val = arg.add_clean(bcx.fcx, arg_scope);
-                bcx.fcx.lllocals.borrow_mut()
-                   .insert(pat.id, Datum::new_lvalue(arg_val, NoCleanup, arg_ty));
+                let arg_val = unpack_datum!(bcx,
+                    arg.to_lvalue_datum_in_scope(bcx, &bcx.name(ident.name), arg_scope));
+                bcx.fcx.lllocals.borrow_mut().insert(pat.id, arg_val);
                 bcx
             } else {
                 mk_binding_alloca(

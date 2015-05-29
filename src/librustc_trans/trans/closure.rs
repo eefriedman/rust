@@ -35,7 +35,7 @@ use syntax::ast;
 use syntax::ast_util;
 
 
-fn load_closure_environment<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
+fn load_closure_environment<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                                         arg_scope_id: ScopeId,
                                         freevars: &[ty::Freevar])
                                         -> Block<'blk, 'tcx>
@@ -80,16 +80,17 @@ fn load_closure_environment<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 true
             }
         };
-        let def_id = freevar.def.def_id();
-        let datum = Datum::new_lvalue(upvar_ptr, datum::NoCleanup, node_id_type(bcx, def_id.node));
-        bcx.fcx.llupvars.borrow_mut().insert(def_id.node, datum);
 
-        if kind == ty::FnOnceClosureKind && !captured_by_ref {
-            bcx.fcx.schedule_drop_mem(arg_scope_id,
-                                      upvar_ptr,
-                                      None,
-                                      node_id_type(bcx, def_id.node))
-        }
+        let def_id = freevar.def.def_id();
+        let var_ty = node_id_type(bcx, def_id.node);
+        let datum = if kind == ty::FnOnceClosureKind && !captured_by_ref {
+            let rdatum = Datum::new_rvalue(upvar_ptr, var_ty, datum::ByRef);
+            unpack_datum!(bcx,
+                rdatum.to_lvalue_datum_in_scope(bcx, "cvar", arg_scope_id))
+        } else {
+            Datum::new_lvalue(upvar_ptr, datum::NoCleanup, var_ty)
+        };
+        bcx.fcx.llupvars.borrow_mut().insert(def_id.node, datum);
 
         if let Some(env_pointer_alloca) = env_pointer_alloca {
             debuginfo::create_captured_var_metadata(
