@@ -272,9 +272,8 @@ pub fn drop_ty_core<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         if let Some(drop_flags) = drop_flags {
             Call(bcx, glue, &[ptr, drop_flags], None, debug_loc);
         } else {
-            Call(bcx, glue, &[ptr], None, debug_loc); 
+            Call(bcx, glue, &[ptr], None, debug_loc);
         };
-        
     }
     bcx
 }
