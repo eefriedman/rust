@@ -348,7 +348,7 @@ impl KindOps for Lvalue {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
         match cleanup_kind {
             NoCleanup => {
-                if bcx.fcx.type_needs_drop(ty) {
+                if glue::num_drop_flags(bcx, ty) != 0 {
                     // We don't know how to prevent the drop glue for this
                     // lvalue from running.
                     unsafe {llvm::LLVMDumpValue(llvm::LLVMGetBasicBlockParent(llvm::LLVMGetInstructionParent(val))); }
