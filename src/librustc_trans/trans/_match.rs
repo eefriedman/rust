@@ -892,7 +892,7 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                                cs: Option<cleanup::ScopeId>)
                                -> Block<'blk, 'tcx> {
     for (&ident, &binding_info) in bindings_map {
-        let llval = match binding_info.trmode {
+        let datum = match binding_info.trmode {
             // By value mut binding for a copy type: load from the ptr
             // into the matched value and copy to our alloca
             TrByCopy(llbinding) => {
@@ -907,21 +907,16 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                     bcx.fcx.schedule_lifetime_end(cs, llbinding);
                 }
 
-                llbinding
+                Datum::new_lvalue(llbinding, NoCleanup, binding_info.ty)
             },
 
             // By ref binding: use the ptr into the matched value
-            TrByRef => binding_info.llmatch
+            TrByRef => {
+                Datum::new_lvalue(binding_info.llmatch, NoCleanup, binding_info.ty)
+            }
         };
 
-        let datum = if let Some(cs) = cs {
-            let rdatum = Datum::new_rvalue(llval, binding_info.ty, ByRef);
-            unpack_datum!(bcx, rdatum.to_lvalue_datum_in_scope(bcx, "patbind", cs))
-        } else {
-            Datum::new_lvalue(llval, NoCleanup, binding_info.ty)
-        };
-
-        debug!("binding {} to {}", binding_info.id, bcx.val_to_string(llval));
+        debug!("binding {} to {}", binding_info.id, bcx.val_to_string(datum.val));
         bcx.fcx.lllocals.borrow_mut().insert(binding_info.id, datum);
         debuginfo::create_match_binding_metadata(bcx, ident.name, binding_info);
     }
@@ -1021,8 +1016,7 @@ fn compile_submatch<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 call_lifetime_start(bcx, binfo.llmatch);
                 if binfo.trmode == TrByRef && type_is_fat_ptr(bcx.tcx(), binfo.ty) {
                     expr::copy_fat_ptr(bcx, *value_ptr, binfo.llmatch);
-                }
-                else {
+                } else {
                     Store(bcx, *value_ptr, binfo.llmatch);
                 }
             }
