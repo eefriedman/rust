@@ -22,8 +22,6 @@ use middle::cfg;
 use middle::def;
 use middle::infer;
 use middle::lang_items::LangItem;
-use middle::mem_categorization as mc;
-use middle::region;
 use middle::subst::{self, Subst, Substs};
 use trans::base;
 use trans::build;
@@ -639,54 +637,6 @@ impl<'blk, 'tcx> BlockS<'blk, 'tcx> {
         monomorphize::apply_param_substs(self.tcx(),
                                          self.fcx.param_substs,
                                          value)
-    }
-}
-
-impl<'blk, 'tcx> mc::Typer<'tcx> for BlockS<'blk, 'tcx> {
-    fn node_ty(&self, id: ast::NodeId) -> mc::McResult<Ty<'tcx>> {
-        Ok(node_id_type(self, id))
-    }
-
-    fn expr_ty_adjusted(&self, expr: &ast::Expr) -> mc::McResult<Ty<'tcx>> {
-        Ok(expr_ty_adjusted(self, expr))
-    }
-
-    fn node_method_ty(&self, method_call: ty::MethodCall) -> Option<Ty<'tcx>> {
-        self.tcx()
-            .method_map
-            .borrow()
-            .get(&method_call)
-            .map(|method| monomorphize_type(self, method.ty))
-    }
-
-    fn node_method_origin(&self, method_call: ty::MethodCall)
-                          -> Option<ty::MethodOrigin<'tcx>>
-    {
-        self.tcx()
-            .method_map
-            .borrow()
-            .get(&method_call)
-            .map(|method| method.origin.clone())
-    }
-
-    fn adjustments<'a>(&'a self) -> &'a RefCell<NodeMap<ty::AutoAdjustment<'tcx>>> {
-        &self.tcx().adjustments
-    }
-
-    fn is_method_call(&self, id: ast::NodeId) -> bool {
-        self.tcx().method_map.borrow().contains_key(&ty::MethodCall::expr(id))
-    }
-
-    fn temporary_scope(&self, rvalue_id: ast::NodeId) -> Option<region::CodeExtent> {
-        self.tcx().region_maps.temporary_scope(rvalue_id)
-    }
-
-    fn upvar_capture(&self, upvar_id: ty::UpvarId) -> Option<ty::UpvarCapture> {
-        Some(self.tcx().upvar_capture_map.borrow().get(&upvar_id).unwrap().clone())
-    }
-
-    fn type_moves_by_default(&self, span: Span, ty: Ty<'tcx>) -> bool {
-        self.fcx.param_env.type_moves_by_default(span, ty)
     }
 }
 

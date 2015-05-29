@@ -194,9 +194,7 @@ use middle::check_match::StaticInliner;
 use middle::check_match;
 use middle::const_eval;
 use middle::def::{self, DefMap};
-use middle::expr_use_visitor as euv;
 use middle::lang_items::StrEqFnLangItem;
-use middle::mem_categorization as mc;
 use middle::pat_util::*;
 use trans::adt;
 use trans::base::*;
@@ -330,7 +328,6 @@ pub enum OptResult<'blk, 'tcx: 'blk> {
 #[derive(Clone, Copy, PartialEq)]
 pub enum TransBindingMode {
     TrByCopy(/* llbinding */ ValueRef),
-    TrByMove,
     TrByRef,
 }
 
@@ -900,6 +897,9 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             // into the matched value and copy to our alloca
             TrByCopy(llbinding) => {
                 let llval = Load(bcx, binding_info.llmatch);
+                // FIXME: This needs a pointer to flags from somewhere... but
+                // where can we find the flags pointer for the value stored
+                // in llmatch?
                 let datum = Datum::new_lvalue(llval, NoCleanup, binding_info.ty);
                 call_lifetime_start(bcx, llbinding);
                 bcx = datum.store_to(bcx, llbinding);
@@ -909,9 +909,6 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
 
                 llbinding
             },
-
-            // By value move bindings: load from the ptr into the matched value
-            TrByMove => Load(bcx, binding_info.llmatch),
 
             // By ref binding: use the ptr into the matched value
             TrByRef => binding_info.llmatch
@@ -1328,80 +1325,7 @@ pub fn trans_match<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     trans_match_inner(bcx, match_expr.id, discr_expr, arms, dest)
 }
 
-/// Checks whether the binding in `discr` is assigned to anywhere in the expression `body`
-fn is_discr_reassigned(bcx: Block, discr: &ast::Expr, body: &ast::Expr) -> bool {
-    let (vid, field) = match discr.node {
-        ast::ExprPath(..) => match bcx.def(discr.id) {
-            def::DefLocal(vid) | def::DefUpvar(vid, _) => (vid, None),
-            _ => return false
-        },
-        ast::ExprField(ref base, field) => {
-            let vid = match bcx.tcx().def_map.borrow().get(&base.id).map(|d| d.full_def()) {
-                Some(def::DefLocal(vid)) | Some(def::DefUpvar(vid, _)) => vid,
-                _ => return false
-            };
-            (vid, Some(mc::NamedField(field.node.name)))
-        },
-        ast::ExprTupField(ref base, field) => {
-            let vid = match bcx.tcx().def_map.borrow().get(&base.id).map(|d| d.full_def()) {
-                Some(def::DefLocal(vid)) | Some(def::DefUpvar(vid, _)) => vid,
-                _ => return false
-            };
-            (vid, Some(mc::PositionalField(field.node)))
-        },
-        _ => return false
-    };
-
-    let mut rc = ReassignmentChecker {
-        node: vid,
-        field: field,
-        reassigned: false
-    };
-    {
-        let mut visitor = euv::ExprUseVisitor::new(&mut rc, bcx);
-        visitor.walk_expr(body);
-    }
-    rc.reassigned
-}
-
-struct ReassignmentChecker {
-    node: ast::NodeId,
-    field: Option<mc::FieldName>,
-    reassigned: bool
-}
-
-// Determine if the expression we're matching on is reassigned to within
-// the body of the match's arm.
-// We only care for the `mutate` callback since this check only matters
-// for cases where the matched value is moved.
-impl<'tcx> euv::Delegate<'tcx> for ReassignmentChecker {
-    fn consume(&mut self, _: ast::NodeId, _: Span, _: mc::cmt, _: euv::ConsumeMode) {}
-    fn matched_pat(&mut self, _: &ast::Pat, _: mc::cmt, _: euv::MatchMode) {}
-    fn consume_pat(&mut self, _: &ast::Pat, _: mc::cmt, _: euv::ConsumeMode) {}
-    fn borrow(&mut self, _: ast::NodeId, _: Span, _: mc::cmt, _: ty::Region,
-              _: ty::BorrowKind, _: euv::LoanCause) {}
-    fn decl_without_init(&mut self, _: ast::NodeId, _: Span) {}
-
-    fn mutate(&mut self, _: ast::NodeId, _: Span, cmt: mc::cmt, _: euv::MutateMode) {
-        match cmt.cat {
-            mc::cat_upvar(mc::Upvar { id: ty::UpvarId { var_id: vid, .. }, .. }) |
-            mc::cat_local(vid) => self.reassigned |= self.node == vid,
-            mc::cat_interior(ref base_cmt, mc::InteriorField(field)) => {
-                match base_cmt.cat {
-                    mc::cat_upvar(mc::Upvar { id: ty::UpvarId { var_id: vid, .. }, .. }) |
-                    mc::cat_local(vid) => {
-                        self.reassigned |= self.node == vid && Some(field) == self.field
-                    },
-                    _ => {}
-                }
-            },
-            _ => {}
-        }
-    }
-}
-
-fn create_bindings_map<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, pat: &ast::Pat,
-                                   discr: &ast::Expr, body: &ast::Expr)
+fn create_bindings_map<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, pat: &ast::Pat)
                                    -> BindingsMap<'tcx> {
     // Create the bindings map, which is a mapping from each binding name
     // to an alloca() that will be the value for that local variable.
@@ -1409,37 +1333,26 @@ fn create_bindings_map<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, pat: &ast::Pat,
     // from the various alternatives.
     let ccx = bcx.ccx();
     let tcx = bcx.tcx();
-    let reassigned = is_discr_reassigned(bcx, discr, body);
     let mut bindings_map = FnvHashMap();
     pat_bindings(&tcx.def_map, &*pat, |bm, p_id, span, path1| {
         let ident = path1.node;
         let name = ident.name;
         let variable_ty = node_id_type(bcx, p_id);
         let llvariable_ty = type_of::type_of(ccx, variable_ty);
-        let tcx = bcx.tcx();
-        let param_env = ty::empty_parameter_environment(tcx);
 
         let llmatch;
         let trmode;
         match bm {
-            ast::BindByValue(_)
-                if !ty::type_moves_by_default(&param_env, span, variable_ty) || reassigned =>
+            ast::BindByValue(_) =>
             {
+                // In this case, the final type of the variable will be T,
+                // but during matching we need to store a *T.
                 llmatch = alloca_no_lifetime(bcx,
                                  llvariable_ty.ptr_to(),
                                  "__llmatch");
                 trmode = TrByCopy(alloca_no_lifetime(bcx,
                                          llvariable_ty,
                                          &bcx.name(name)));
-            }
-            ast::BindByValue(_) => {
-                // in this case, the final type of the variable will be T,
-                // but during matching we need to store a *T as explained
-                // above
-                llmatch = alloca_no_lifetime(bcx,
-                                 llvariable_ty.ptr_to(),
-                                 &bcx.name(name));
-                trmode = TrByMove;
             }
             ast::BindByRef(_) => {
                 llmatch = alloca_no_lifetime(bcx,
@@ -1485,7 +1398,7 @@ fn trans_match_inner<'blk, 'tcx>(scope_cx: Block<'blk, 'tcx>,
     let arm_datas: Vec<ArmData> = arms.iter().map(|arm| ArmData {
         bodycx: fcx.new_id_block("case_body", arm.body.id),
         arm: arm,
-        bindings_map: create_bindings_map(bcx, &*arm.pats[0], discr_expr, &*arm.body)
+        bindings_map: create_bindings_map(bcx, &*arm.pats[0])
     }).collect();
 
     let mut pat_renaming_map = if scope_cx.sess().opts.debuginfo != NoDebugInfo {

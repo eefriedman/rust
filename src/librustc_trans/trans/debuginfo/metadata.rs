@@ -28,7 +28,7 @@ use middle::pat_util;
 use middle::subst::{self, Substs};
 use trans::{type_of, adt, machine, monomorphize};
 use trans::common::{self, CrateContext, FunctionContext, NormalizingClosureTyper, Block};
-use trans::_match::{BindingInfo, TrByCopy, TrByMove, TrByRef};
+use trans::_match::{BindingInfo, TrByCopy, TrByRef};
 use trans::type_::Type;
 use middle::ty::{self, Ty, ClosureTyper};
 use session::config::{self, FullDebugInfo};
@@ -2059,9 +2059,6 @@ pub fn create_match_binding_metadata<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     }
 
     let scope_metadata = scope_metadata(bcx.fcx, binding.id, binding.span);
-    let aops = unsafe {
-        [llvm::LLVMDIBuilderCreateOpDeref()]
-    };
     // Regardless of the actual type (`T`) we're always passed the stack slot
     // (alloca) for the binding. For ByRef bindings that's a `T*` but for ByMove
     // bindings we actually have `T**`. So to get the actual variable we need to
@@ -2070,10 +2067,6 @@ pub fn create_match_binding_metadata<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     let var_access = match binding.trmode {
         TrByCopy(llbinding) => VariableAccess::DirectVariable {
             alloca: llbinding
-        },
-        TrByMove => VariableAccess::IndirectVariable {
-            alloca: binding.llmatch,
-            address_operations: &aops
         },
         TrByRef => VariableAccess::DirectVariable {
             alloca: binding.llmatch
