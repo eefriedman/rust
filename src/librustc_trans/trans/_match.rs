@@ -325,10 +325,10 @@ pub enum OptResult<'blk, 'tcx: 'blk> {
     LowerBound(Result<'blk, 'tcx>)
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub enum TransBindingMode {
-    TrByCopy(/* llbinding */ ValueRef),
-    TrByRef,
+    TrByCopy(ValueRef),
+    TrByRef(ValueRef),
 }
 
 /// Information about a pattern binding:
@@ -340,7 +340,6 @@ pub enum TransBindingMode {
 /// - `ty` is the Rust type of the binding
 #[derive(Clone, Copy)]
 pub struct BindingInfo<'tcx> {
-    pub llmatch: ValueRef,
     pub trmode: TransBindingMode,
     pub id: ast::NodeId,
     pub span: Span,
@@ -896,23 +895,14 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
             // By value mut binding for a copy type: load from the ptr
             // into the matched value and copy to our alloca
             TrByCopy(llbinding) => {
-                let llval = Load(bcx, binding_info.llmatch);
-                // FIXME: This needs a pointer to flags from somewhere... but
-                // where can we find the flags pointer for the value stored
-                // in llmatch?
-                let datum = Datum::new_lvalue(llval, NoCleanup, binding_info.ty);
-                call_lifetime_start(bcx, llbinding);
-                bcx = datum.store_to(bcx, llbinding);
-                if let Some(cs) = cs {
-                    bcx.fcx.schedule_lifetime_end(cs, llbinding);
-                }
-
-                Datum::new_lvalue(llbinding, NoCleanup, binding_info.ty)
+                let cs = cs.unwrap();
+                let rdatum = Datum::new_rvalue(llbinding, binding_info.ty, ByRef);
+                unpack_datum!(bcx, rdatum.to_lvalue_datum_in_scope(bcx, &bcx.name(ident.name), cs))
             },
 
             // By ref binding: use the ptr into the matched value
-            TrByRef => {
-                Datum::new_lvalue(binding_info.llmatch, NoCleanup, binding_info.ty)
+            TrByRef(llref) => {
+                Datum::new_lvalue(llref, NoCleanup, binding_info.ty)
             }
         };
 
@@ -944,19 +934,10 @@ fn compile_guard<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     let val = val.to_llbool(bcx);
 
     for (_, &binding_info) in &data.bindings_map {
-        if let TrByCopy(llbinding) = binding_info.trmode {
-            call_lifetime_end(bcx, llbinding);
-        }
-    }
-
-    for (_, &binding_info) in &data.bindings_map {
         bcx.fcx.lllocals.borrow_mut().remove(&binding_info.id);
     }
 
     with_cond(bcx, Not(bcx, val, guard_expr.debug_loc()), |bcx| {
-        for (_, &binding_info) in &data.bindings_map {
-            call_lifetime_end(bcx, binding_info.llmatch);
-        }
         match chk {
             // If the default arm is the only one left, move on to the next
             // condition explicitly rather than (possibly) falling back to
@@ -1013,11 +994,20 @@ fn compile_submatch<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
             let data = &m[0].data;
             for &(ref ident, ref value_ptr) in &m[0].bound_ptrs {
                 let binfo = *data.bindings_map.get(ident).unwrap();
-                call_lifetime_start(bcx, binfo.llmatch);
-                if binfo.trmode == TrByRef && type_is_fat_ptr(bcx.tcx(), binfo.ty) {
-                    expr::copy_fat_ptr(bcx, *value_ptr, binfo.llmatch);
-                } else {
-                    Store(bcx, *value_ptr, binfo.llmatch);
+                match binfo.trmode {
+                    TrByRef(llmatch) => {
+                        call_lifetime_start(bcx, llmatch);
+                        if type_is_fat_ptr(bcx.tcx(), binfo.ty) {
+                            expr::copy_fat_ptr(bcx, *value_ptr, llmatch);
+                        } else {
+                            Store(bcx, *value_ptr, llmatch);
+                        }
+                    }
+                    TrByCopy(binding) => {
+                        // FIXME: WRONG!
+                        let src_datum = Datum::new_lvalue(*value_ptr, NoCleanup, binfo.ty);
+                        bcx = src_datum.store_to(bcx, binding);
+                    }
                 }
             }
             match data.arm.guard {
@@ -1334,29 +1324,21 @@ fn create_bindings_map<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, pat: &ast::Pat)
         let variable_ty = node_id_type(bcx, p_id);
         let llvariable_ty = type_of::type_of(ccx, variable_ty);
 
-        let llmatch;
         let trmode;
         match bm {
-            ast::BindByValue(_) =>
-            {
-                // In this case, the final type of the variable will be T,
-                // but during matching we need to store a *T.
-                llmatch = alloca_no_lifetime(bcx,
-                                 llvariable_ty.ptr_to(),
-                                 "__llmatch");
+            ast::BindByValue(_) => {
                 trmode = TrByCopy(alloca_no_lifetime(bcx,
                                          llvariable_ty,
                                          &bcx.name(name)));
             }
             ast::BindByRef(_) => {
-                llmatch = alloca_no_lifetime(bcx,
+                let llmatch = alloca_no_lifetime(bcx,
                                  llvariable_ty,
                                  &bcx.name(name));
-                trmode = TrByRef;
+                trmode = TrByRef(llmatch);
             }
         };
         bindings_map.insert(ident, BindingInfo {
-            llmatch: llmatch,
             trmode: trmode,
             id: p_id,
             span: span,

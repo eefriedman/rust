@@ -2068,8 +2068,8 @@ pub fn create_match_binding_metadata<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         TrByCopy(llbinding) => VariableAccess::DirectVariable {
             alloca: llbinding
         },
-        TrByRef => VariableAccess::DirectVariable {
-            alloca: binding.llmatch
+        TrByRef(llmatch) => VariableAccess::DirectVariable {
+            alloca: llmatch
         }
     };
 
