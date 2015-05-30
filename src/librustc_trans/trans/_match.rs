@@ -188,7 +188,6 @@ pub use self::TransBindingMode::*;
 use self::Opt::*;
 use self::FailureHandler::*;
 
-use back::abi;
 use llvm::{ValueRef, BasicBlockRef};
 use middle::check_match::StaticInliner;
 use middle::check_match;
@@ -198,8 +197,8 @@ use middle::lang_items::StrEqFnLangItem;
 use middle::pat_util::*;
 use trans::adt;
 use trans::base::*;
-use trans::build::{AddCase, And, Br, CondBr, GEPi, InBoundsGEP, Load, PointerCast};
-use trans::build::{Not, Store, Sub, add_comment};
+use trans::build::{AddCase, And, Br, CondBr, GEPi, Load, PointerCast};
+use trans::build::{Not, Store, add_comment};
 use trans::build;
 use trans::callee;
 use trans::cleanup::{self, CleanupMethods};
@@ -450,13 +449,8 @@ fn enter_match<'a, 'b, 'p, 'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
                         bound_ptrs.push((path.node, val));
                     }
                 }
-                ast::PatVec(ref before, Some(ref slice), ref after) => {
-                    if let ast::PatIdent(_, ref path, None) = slice.node {
-                        let subslice_val = bind_subslice_pat(
-                            bcx, this.id, val,
-                            before.len(), after.len());
-                        bound_ptrs.push((path.node, subslice_val));
-                    }
+                ast::PatVec(ref _before, Some(ref _slice), ref _after) => {
+                    panic!("Not yet implemented");
                 }
                 _ => {}
             }
@@ -642,56 +636,6 @@ fn extract_variant_args<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     }).collect();
 
     ExtractedBlock { vals: args, bcx: bcx }
-}
-
-/// Helper for converting from the ValueRef that we pass around in the match code, which is always
-/// an lvalue, into a Datum. Eventually we should just pass around a Datum and be done with it.
-fn match_datum<'tcx>(val: ValueRef, left_ty: Ty<'tcx>) -> Datum<'tcx, Lvalue> {
-    // FIXME: Delete
-    Datum::new_lvalue(val, NoCleanup, left_ty)
-}
-
-fn bind_subslice_pat(bcx: Block,
-                     pat_id: ast::NodeId,
-                     val: ValueRef,
-                     offset_left: usize,
-                     offset_right: usize) -> ValueRef {
-    let _icx = push_ctxt("match::bind_subslice_pat");
-    let vec_ty = node_id_type(bcx, pat_id);
-    let unit_ty = ty::sequence_element_type(bcx.tcx(), ty::type_content(vec_ty));
-    let vec_datum = match_datum(val, vec_ty);
-    let (base, len) = vec_datum.get_vec_base_and_len(bcx);
-
-    let slice_begin = InBoundsGEP(bcx, base, &[C_uint(bcx.ccx(), offset_left)]);
-    let slice_len_offset = C_uint(bcx.ccx(), offset_left + offset_right);
-    let slice_len = Sub(bcx, len, slice_len_offset, DebugLoc::None);
-    let slice_ty = ty::mk_slice(bcx.tcx(),
-                                bcx.tcx().mk_region(ty::ReStatic),
-                                ty::mt {ty: unit_ty, mutbl: ast::MutImmutable});
-    let scratch = rvalue_scratch_datum(bcx, slice_ty, "");
-    Store(bcx, slice_begin,
-          GEPi(bcx, scratch.val, &[0, abi::FAT_PTR_ADDR]));
-    Store(bcx, slice_len, GEPi(bcx, scratch.val, &[0, abi::FAT_PTR_EXTRA]));
-    scratch.val
-}
-
-fn extract_vec_elems<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                                 left_ty: Ty<'tcx>,
-                                 before: usize,
-                                 after: usize,
-                                 val: ValueRef)
-                                 -> ExtractedBlock<'blk, 'tcx> {
-    let _icx = push_ctxt("match::extract_vec_elems");
-    let vec_datum = match_datum(val, left_ty);
-    let (base, len) = vec_datum.get_vec_base_and_len(bcx);
-    let mut elems = vec![];
-    elems.extend((0..before).map(|i| GEPi(bcx, base, &[i])));
-    elems.extend((0..after).rev().map(|i| {
-        InBoundsGEP(bcx, base, &[
-            Sub(bcx, len, C_uint(bcx.ccx(), i + 1), DebugLoc::None)
-        ])
-    }));
-    ExtractedBlock { vals: elems, bcx: bcx }
 }
 
 // Macro for deciding whether any of the remaining matches fit a given kind of
@@ -1099,9 +1043,8 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         Some(vec!(Load(bcx, val)))
     } else {
         match left_ty.sty {
-            ty::ty_vec(_, Some(n)) => {
-                let args = extract_vec_elems(bcx, left_ty, n, 0, val);
-                Some(args.vals)
+            ty::ty_vec(_, Some(_n)) => {
+                panic!("Not yet implemented");
             }
             _ => None
         }
@@ -1252,17 +1195,11 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                 unpacked = argvals;
                 opt_cx = new_bcx;
             }
-            SliceLengthEqual(len, _) => {
-                let args = extract_vec_elems(opt_cx, left_ty, len, 0, val);
-                size = args.vals.len();
-                unpacked = args.vals.clone();
-                opt_cx = args.bcx;
+            SliceLengthEqual(_len, _) => {
+                panic!("Not yet implemeneted");
             }
-            SliceLengthGreaterOrEqual(before, after, _) => {
-                let args = extract_vec_elems(opt_cx, left_ty, before, after, val);
-                size = args.vals.len();
-                unpacked = args.vals.clone();
-                opt_cx = args.bcx;
+            SliceLengthGreaterOrEqual(_before, _after, _) => {
+                panic!("Not yet implemeneted");
             }
             ConstantValue(..) | ConstantRange(..) => ()
         }
@@ -1684,41 +1621,16 @@ fn bind_irrefutable_pat<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                 bcx = bind_irrefutable_pat(bcx, &**elem, field, cleanup_scope);
             }
         }
-        ast::PatBox(ref inner) => {
-            let llbox = Load(bcx, datum.val);
-            let cleanup_kind = if let StackDropFlags(drop_flags) = datum.cleanup_kind {
-                BoxDropFlag(drop_flags)
-            } else {
-                NoCleanup
-            };
-            let box_datum = Datum::new_lvalue(llbox, cleanup_kind, node_id_type(bcx, inner.id));
-            bcx = bind_irrefutable_pat(bcx, &**inner, box_datum, cleanup_scope);
+        ast::PatBox(ref _inner) => {
+            panic!("Not yet implemented");
         }
         ast::PatRegion(ref inner, _) => {
             let loaded_val = Load(bcx, datum.val);
             let loaded_datum = Datum::new_lvalue(loaded_val, NoCleanup, node_id_type(bcx, inner.id));
             bcx = bind_irrefutable_pat(bcx, &**inner, loaded_datum, cleanup_scope);
         }
-        ast::PatVec(ref before, ref slice, ref after) => {
-            let pat_ty = node_id_type(bcx, pat.id);
-            let mut extracted = extract_vec_elems(bcx, pat_ty, before.len(), after.len(), datum.val);
-            match slice {
-                &Some(_) => {
-                    extracted.vals.insert(
-                        before.len(),
-                        bind_subslice_pat(bcx, pat.id, datum.val, before.len(), after.len())
-                    );
-                }
-                &None => ()
-            }
-            bcx = before
-                .iter()
-                .chain(slice.iter())
-                .chain(after.iter())
-                .zip(extracted.vals.into_iter())
-                .fold(bcx, |bcx, (inner, elem)|
-                    bind_irrefutable_pat(bcx, &**inner, Datum::new_lvalue(elem, NoCleanup, node_id_type(bcx, inner.id)), cleanup_scope)
-                );
+        ast::PatVec(ref _before, ref _slice, ref _after) => {
+            panic!("Not yet implemented");
         }
         ast::PatMac(..) => {
             bcx.sess().span_bug(pat.span, "unexpanded macro");
