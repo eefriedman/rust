@@ -207,7 +207,6 @@ use trans::consts;
 use trans::datum::*;
 use trans::debuginfo::{self, DebugLoc, ToDebugLoc};
 use trans::expr::{self, Dest};
-use trans::monomorphize;
 use trans::type_of;
 use middle::ty::{self, Ty};
 use session::config::{NoDebugInfo, FullDebugInfo};
@@ -991,42 +990,33 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
     let adt_vals = if any_irrefutable_adt_pat(bcx.tcx(), m, col) {
         let repr = adt::represent_type(bcx.ccx(), left_ty);
         let arg_count = adt::num_args(&*repr, 0);
-        let (arg_count, struct_val) = if type_is_sized(bcx.tcx(), left_ty) {
-            (arg_count, val.to_llref())
+        if type_is_sized(bcx.tcx(), left_ty) {
+            Some((0..arg_count).map(|ix| {
+                let ty = adt::trans_field_type(bcx, &repr, 0, ix);
+                val.get_element(bcx, ty, &repr, 0, ix)
+            }).collect())
         } else {
+            let struct_val = Load(bcx, expr::get_dataptr(bcx, val.to_llref()));
+            let mut field_vals: Vec<_> = (0..arg_count-1).map(|ix| {
+                let val = adt::trans_field_ptr(bcx, &repr, struct_val, 0, ix);
+                let ty = adt::trans_field_type(bcx, &repr, 0, ix);
+                Datum::new_lvalue(val, NoCleanup, ty)
+            }).collect();
+
             // For an unsized ADT (i.e. DST struct), we need to treat
             // the last field specially: instead of simply passing a
             // ValueRef pointing to that field, as with all the others,
-            // we skip it and instead construct a 'fat ptr' below.
-            (arg_count - 1, Load(bcx, expr::get_dataptr(bcx, val.to_llref())))
-        };
-        let mut field_vals: Vec<_> = (0..arg_count).map(|ix| {
-            let val = adt::trans_field_ptr(bcx, &repr, struct_val, 0, ix);
-            let ty = adt::trans_field_type(bcx, &repr, 0, ix);
-            Datum::new_lvalue(val, NoCleanup, ty)
-        }).collect();
-
-        match left_ty.sty {
-            ty::ty_struct(def_id, substs) if !type_is_sized(bcx.tcx(), left_ty) => {
-                // The last field is technically unsized but
-                // since we can only ever match that field behind
-                // a reference we construct a fat ptr here.
-                let fields = ty::lookup_struct_fields(bcx.tcx(), def_id);
-                let unsized_ty = fields.iter().last().map(|field| {
-                    let fty = ty::lookup_field_type(bcx.tcx(), def_id, field.id, substs);
-                    monomorphize::normalize_associated_type(bcx.tcx(), &fty)
-                }).unwrap();
-                let llty = type_of::type_of(bcx.ccx(), unsized_ty);
-                let scratch = alloca_no_lifetime(bcx, llty, "__struct_field_fat_ptr");
-                let data = adt::trans_field_ptr(bcx, &*repr, struct_val, 0, arg_count);
-                let len = Load(bcx, expr::get_len(bcx, val.to_llref()));
-                Store(bcx, data, expr::get_dataptr(bcx, scratch));
-                Store(bcx, len, expr::get_len(bcx, scratch));
-                field_vals.push(Datum::new_lvalue(scratch, NoCleanup, unsized_ty));
-            }
-            _ => {}
+            // we skip it and instead construct a 'fat ptr'.
+            let unsized_ty = adt::trans_field_type(bcx, &repr, 0, arg_count-1);
+            let llty = type_of::type_of(bcx.ccx(), unsized_ty);
+            let scratch = alloca_no_lifetime(bcx, llty, "__struct_field_fat_ptr");
+            let data = adt::trans_field_ptr(bcx, &*repr, struct_val, 0, arg_count);
+            let len = Load(bcx, expr::get_len(bcx, val.to_llref()));
+            Store(bcx, data, expr::get_dataptr(bcx, scratch));
+            Store(bcx, len, expr::get_len(bcx, scratch));
+            field_vals.push(Datum::new_lvalue(scratch, NoCleanup, unsized_ty));
+            Some(field_vals)
         }
-        Some(field_vals)
     } else if any_uniq_pat(m, col) || any_region_pat(m, col) {
         let pointee_ty = match val.ty.sty {
             ty::ty_ptr(ty::mt { ty: content_ty, .. }) |
