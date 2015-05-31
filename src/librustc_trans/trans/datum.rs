@@ -609,6 +609,11 @@ impl<'tcx> Datum<'tcx, Lvalue> {
                       cleanup_kind : MoveCleanupKind,
                       ty: Ty<'tcx>)
                       -> Datum<'tcx, Lvalue> {
+        match ty.sty {
+            ty::ty_infer(_) | ty::ty_projection(_) | ty::ty_param(_) |
+            ty::ty_err => panic!("Unexpected type in trans"),
+            _ => {}
+        }
         Datum { val: val, cleanup_kind: cleanup_kind, ty: ty, kind: Lvalue }
     }
 

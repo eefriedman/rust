@@ -930,6 +930,36 @@ pub fn struct_field_ptr<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, st: &Struct<'tcx>, v
     GEPi(bcx, val, &[0, ix])
 }
 
+pub fn trans_field_type<'blk, 'tcx>(bcx: Block<'blk, 'tcx>, r: &Repr<'tcx>,
+                        discr: Disr, ix: usize) -> Ty<'tcx>
+{
+    match *r {
+        CEnum(..) => {
+            bcx.ccx().sess().bug("element access in C-like enum")
+        }
+        Univariant(ref st) => {
+            assert_eq!(discr, 0);
+            st.fields[ix]
+        }
+        General(_, ref cases) => {
+            cases[discr as usize].fields[ix + 1]
+        }
+        RawNullablePointer { nndiscr, ref nullfields, .. } |
+        StructWrappedNullablePointer { nndiscr, ref nullfields, .. } if discr != nndiscr => {
+            nullfields[ix]
+        }
+        RawNullablePointer { nndiscr, nnty, .. } => {
+            assert_eq!(ix, 0);
+            assert_eq!(discr, nndiscr);
+            nnty
+        }
+        StructWrappedNullablePointer { ref nonnull, nndiscr, .. } => {
+            assert_eq!(discr, nndiscr);
+            nonnull.fields[ix]
+        }
+    }
+}
+
 /// Construct a constant value, suitable for initializing a
 /// GlobalVariable, given a case and constant values for its fields.
 /// Note that this may have a different LLVM type (and different

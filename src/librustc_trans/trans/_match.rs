@@ -208,7 +208,6 @@ use trans::datum::*;
 use trans::debuginfo::{self, DebugLoc, ToDebugLoc};
 use trans::expr::{self, Dest};
 use trans::monomorphize;
-use trans::tvec;
 use trans::type_of;
 use middle::ty::{self, Ty};
 use session::config::{NoDebugInfo, FullDebugInfo};
@@ -360,7 +359,7 @@ struct ArmData<'p, 'blk, 'tcx: 'blk> {
 struct Match<'a, 'p: 'a, 'blk: 'a, 'tcx: 'blk> {
     pats: Vec<&'p ast::Pat>,
     data: &'a ArmData<'p, 'blk, 'tcx>,
-    bound_ptrs: Vec<(ast::Ident, ValueRef)>,
+    bound_ptrs: Vec<(ast::Ident, Datum<'tcx, Lvalue>)>,
     // Thread along renamings done by the check_match::StaticInliner, so we can
     // map back to original NodeIds
     pat_renaming_map: Option<&'a FnvHashMap<(NodeId, Span), NodeId>>
@@ -390,13 +389,13 @@ fn has_nested_bindings(m: &[Match], col: usize) -> bool {
 fn expand_nested_bindings<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                               m: &[Match<'a, 'p, 'blk, 'tcx>],
                                               col: usize,
-                                              val: ValueRef)
+                                              val: Datum<'tcx, Lvalue>)
                                               -> Vec<Match<'a, 'p, 'blk, 'tcx>> {
     debug!("expand_nested_bindings(bcx={}, m={}, col={}, val={})",
            bcx.to_str(),
            m.repr(bcx.tcx()),
            col,
-           bcx.val_to_string(val));
+           val.to_string(bcx.ccx()));
     let _indenter = indenter();
 
     m.iter().map(|br| {
@@ -427,7 +426,7 @@ fn enter_match<'a, 'b, 'p, 'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
                                           dm: &DefMap,
                                           m: &[Match<'a, 'p, 'blk, 'tcx>],
                                           col: usize,
-                                          val: ValueRef,
+                                          val: Datum<'tcx, Lvalue>,
                                           mut e: F)
                                           -> Vec<Match<'a, 'p, 'blk, 'tcx>> where
     F: FnMut(&[&'p ast::Pat]) -> Option<Vec<&'p ast::Pat>>,
@@ -436,7 +435,7 @@ fn enter_match<'a, 'b, 'p, 'blk, 'tcx, F>(bcx: Block<'blk, 'tcx>,
            bcx.to_str(),
            m.repr(bcx.tcx()),
            col,
-           bcx.val_to_string(val));
+           val.to_string(bcx.ccx()));
     let _indenter = indenter();
 
     m.iter().filter_map(|br| {
@@ -468,13 +467,13 @@ fn enter_default<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                      dm: &DefMap,
                                      m: &[Match<'a, 'p, 'blk, 'tcx>],
                                      col: usize,
-                                     val: ValueRef)
+                                     val: Datum<'tcx, Lvalue>)
                                      -> Vec<Match<'a, 'p, 'blk, 'tcx>> {
     debug!("enter_default(bcx={}, m={}, col={}, val={})",
            bcx.to_str(),
            m.repr(bcx.tcx()),
            col,
-           bcx.val_to_string(val));
+           val.to_string(bcx.ccx()));
     let _indenter = indenter();
 
     // Collect all of the matches that can match against anything.
@@ -525,14 +524,14 @@ fn enter_opt<'a, 'p, 'blk, 'tcx>(
              opt: &Opt,
              col: usize,
              variant_size: usize,
-             val: ValueRef)
+             val: Datum<'tcx, Lvalue>)
              -> Vec<Match<'a, 'p, 'blk, 'tcx>> {
     debug!("enter_opt(bcx={}, m={}, opt={:?}, col={}, val={})",
            bcx.to_str(),
            m.repr(bcx.tcx()),
            *opt,
            col,
-           bcx.val_to_string(val));
+           val.to_string(bcx.ccx()));
     let _indenter = indenter();
 
     let ctor = match opt {
@@ -618,24 +617,6 @@ fn get_branches<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         }
     }
     found
-}
-
-struct ExtractedBlock<'blk, 'tcx: 'blk> {
-    vals: Vec<ValueRef>,
-    bcx: Block<'blk, 'tcx>,
-}
-
-fn extract_variant_args<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                                    repr: &adt::Repr<'tcx>,
-                                    vinfo: &ty::VariantInfo<'tcx>,
-                                    val: ValueRef)
-                                    -> ExtractedBlock<'blk, 'tcx> {
-    let _icx = push_ctxt("match::extract_variant_args");
-    let args = (0..adt::num_args(repr, vinfo.disr_val)).map(|i| {
-        adt::trans_field_ptr(bcx, repr, val, vinfo.disr_val, i)
-    }).collect();
-
-    ExtractedBlock { vals: args, bcx: bcx }
 }
 
 // Macro for deciding whether any of the remaining matches fit a given kind of
@@ -836,16 +817,22 @@ fn insert_lllocals<'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                                -> Block<'blk, 'tcx> {
     for (&ident, &binding_info) in bindings_map {
         let datum = match binding_info.trmode {
-            // By value mut binding for a copy type: load from the ptr
-            // into the matched value and copy to our alloca
             TrByCopy(llbinding) => {
-                let cs = cs.unwrap();
-                let rdatum = Datum::new_rvalue(llbinding, binding_info.ty, ByRef);
-                unpack_datum!(bcx, rdatum.to_lvalue_datum_in_scope(bcx, &bcx.name(ident.name), cs))
+                match cs {
+                    Some(cs) => {
+                        // Lvalue with cleanup
+                        let rdatum = Datum::new_rvalue(llbinding, binding_info.ty, ByRef);
+                        unpack_datum!(bcx, rdatum.to_lvalue_datum_in_scope(bcx, &bcx.name(ident.name), cs))
+                    }
+                    None => {
+                        // Lvalue, no cleanup; the type of the binding is Copy.
+                        Datum::new_lvalue(llbinding, NoCleanup, binding_info.ty)
+                    }
+                }
             },
 
-            // By ref binding: use the ptr into the matched value
             TrByRef(llref) => {
+                // By ref binding: use the ptr into the matched value
                 Datum::new_lvalue(llref, NoCleanup, binding_info.ty)
             }
         };
@@ -861,7 +848,7 @@ fn compile_guard<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                      guard_expr: &ast::Expr,
                                      data: &ArmData<'p, 'blk, 'tcx>,
                                      m: &[Match<'a, 'p, 'blk, 'tcx>],
-                                     vals: &[ValueRef],
+                                     vals: &[Datum<'tcx, Lvalue>],
                                      chk: &FailureHandler,
                                      has_genuine_default: bool)
                                      -> Block<'blk, 'tcx> {
@@ -869,7 +856,7 @@ fn compile_guard<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
            bcx.to_str(),
            bcx.expr_to_string(guard_expr),
            m.repr(bcx.tcx()),
-           vec_map_to_string(vals, |v| bcx.val_to_string(*v)));
+           vec_map_to_string(vals, |v| v.to_string(bcx.ccx())));
     let _indenter = indenter();
 
     let mut bcx = insert_lllocals(bcx, &data.bindings_map, None);
@@ -899,13 +886,13 @@ fn compile_guard<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 
 fn compile_submatch<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                         m: &[Match<'a, 'p, 'blk, 'tcx>],
-                                        vals: &[ValueRef],
+                                        vals: &[Datum<'tcx, Lvalue>],
                                         chk: &FailureHandler,
                                         has_genuine_default: bool) {
     debug!("compile_submatch(bcx={}, m={}, vals={})",
            bcx.to_str(),
            m.repr(bcx.tcx()),
-           vec_map_to_string(vals, |v| bcx.val_to_string(*v)));
+           vec_map_to_string(vals, |v| v.to_string(bcx.ccx())));
     let _indenter = indenter();
     let _icx = push_ctxt("match::compile_submatch");
     let mut bcx = bcx;
@@ -936,21 +923,20 @@ fn compile_submatch<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         }
         None => {
             let data = &m[0].data;
-            for &(ref ident, ref value_ptr) in &m[0].bound_ptrs {
+            for &(ref ident, ref value) in &m[0].bound_ptrs {
                 let binfo = *data.bindings_map.get(ident).unwrap();
                 match binfo.trmode {
                     TrByRef(llmatch) => {
+                        let value_ptr = value.val;
                         call_lifetime_start(bcx, llmatch);
                         if type_is_fat_ptr(bcx.tcx(), binfo.ty) {
-                            expr::copy_fat_ptr(bcx, *value_ptr, llmatch);
+                            expr::copy_fat_ptr(bcx, value_ptr, llmatch);
                         } else {
-                            Store(bcx, *value_ptr, llmatch);
+                            Store(bcx, value_ptr, llmatch);
                         }
                     }
                     TrByCopy(binding) => {
-                        // FIXME: WRONG!
-                        let src_datum = Datum::new_lvalue(*value_ptr, NoCleanup, binfo.ty);
-                        bcx = src_datum.store_to(bcx, binding);
+                        bcx = value.store_to(bcx, binding);
                     }
                 }
             }
@@ -973,10 +959,10 @@ fn compile_submatch<'a, 'p, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 
 fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                                                  m: &[Match<'a, 'p, 'blk, 'tcx>],
-                                                 vals: &[ValueRef],
+                                                 vals: &[Datum<'tcx, Lvalue>],
                                                  chk: &FailureHandler,
                                                  col: usize,
-                                                 val: ValueRef,
+                                                 val: Datum<'tcx, Lvalue>,
                                                  has_genuine_default: bool) {
     let fcx = bcx.fcx;
     let tcx = bcx.tcx();
@@ -1006,17 +992,19 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         let repr = adt::represent_type(bcx.ccx(), left_ty);
         let arg_count = adt::num_args(&*repr, 0);
         let (arg_count, struct_val) = if type_is_sized(bcx.tcx(), left_ty) {
-            (arg_count, val)
+            (arg_count, val.to_llref())
         } else {
             // For an unsized ADT (i.e. DST struct), we need to treat
             // the last field specially: instead of simply passing a
             // ValueRef pointing to that field, as with all the others,
             // we skip it and instead construct a 'fat ptr' below.
-            (arg_count - 1, Load(bcx, expr::get_dataptr(bcx, val)))
+            (arg_count - 1, Load(bcx, expr::get_dataptr(bcx, val.to_llref())))
         };
-        let mut field_vals: Vec<ValueRef> = (0..arg_count).map(|ix|
-            adt::trans_field_ptr(bcx, &*repr, struct_val, 0, ix)
-        ).collect();
+        let mut field_vals: Vec<_> = (0..arg_count).map(|ix| {
+            let val = adt::trans_field_ptr(bcx, &repr, struct_val, 0, ix);
+            let ty = adt::trans_field_type(bcx, &repr, 0, ix);
+            Datum::new_lvalue(val, NoCleanup, ty)
+        }).collect();
 
         match left_ty.sty {
             ty::ty_struct(def_id, substs) if !type_is_sized(bcx.tcx(), left_ty) => {
@@ -1031,16 +1019,21 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                 let llty = type_of::type_of(bcx.ccx(), unsized_ty);
                 let scratch = alloca_no_lifetime(bcx, llty, "__struct_field_fat_ptr");
                 let data = adt::trans_field_ptr(bcx, &*repr, struct_val, 0, arg_count);
-                let len = Load(bcx, expr::get_len(bcx, val));
+                let len = Load(bcx, expr::get_len(bcx, val.to_llref()));
                 Store(bcx, data, expr::get_dataptr(bcx, scratch));
                 Store(bcx, len, expr::get_len(bcx, scratch));
-                field_vals.push(scratch);
+                field_vals.push(Datum::new_lvalue(scratch, NoCleanup, unsized_ty));
             }
             _ => {}
         }
         Some(field_vals)
     } else if any_uniq_pat(m, col) || any_region_pat(m, col) {
-        Some(vec!(Load(bcx, val)))
+        let pointee_ty = match val.ty.sty {
+            ty::ty_ptr(ty::mt { ty: content_ty, .. }) |
+            ty::ty_rptr(_, ty::mt { ty: content_ty, .. }) => content_ty,
+            _ => panic!("Unexpected type")
+        };
+        Some(vec!(Datum::new_lvalue(Load(bcx, val.to_llref()), NoCleanup, pointee_ty)))
     } else {
         match left_ty.sty {
             ty::ty_vec(_, Some(_n)) => {
@@ -1068,12 +1061,11 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
     let opts = get_branches(bcx, m, col);
     debug!("options={:?}", opts);
     let mut kind = NoBranch;
-    let mut test_val = val;
-    debug!("test_val={}", bcx.val_to_string(test_val));
+    let mut test_val = None;
     if !opts.is_empty() {
         match opts[0] {
             ConstantValue(..) | ConstantRange(..) => {
-                test_val = load_if_immediate(bcx, val, left_ty);
+                test_val = Some(load_if_immediate(bcx, val.to_llref(), left_ty));
                 kind = if ty::type_is_integral(left_ty) {
                     Switch
                 } else {
@@ -1081,13 +1073,13 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                 };
             }
             Variant(_, ref repr, _, _) => {
-                let (the_kind, val_opt) = adt::trans_switch(bcx, &**repr, val);
+                let (the_kind, val_opt) = adt::trans_switch(bcx, &repr, val.to_llref());
                 kind = the_kind;
-                if let Some(tval) = val_opt { test_val = tval; }
+                test_val = val_opt;
             }
             SliceLengthEqual(..) | SliceLengthGreaterOrEqual(..) => {
-                let (_, len) = tvec::get_base_and_len(bcx, val, left_ty);
-                test_val = len;
+                let (_, len) = val.get_vec_base_and_len(bcx);
+                test_val = Some(len);
                 kind = Switch;
             }
         }
@@ -1104,7 +1096,7 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         _ => bcx.fcx.new_temp_block("match_else")
     };
     let sw = if kind == Switch {
-        build::Switch(bcx, test_val, else_cx.llbb, opts.len())
+        build::Switch(bcx, test_val.unwrap(), else_cx.llbb, opts.len())
     } else {
         C_int(ccx, 0) // Placeholder for when not using a switch
     };
@@ -1149,18 +1141,18 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
                     let Result { bcx: after_cx, val: matches } = {
                         match opt.trans(bcx) {
                             SingleResult(Result { bcx, val }) => {
-                                compare_values(bcx, test_val, val, t, debug_loc)
+                                compare_values(bcx, test_val.unwrap(), val, t, debug_loc)
                             }
                             RangeResult(Result { val: vbegin, .. },
                                         Result { bcx, val: vend }) => {
-                                let llge = compare_scalar_types(bcx, test_val, vbegin,
+                                let llge = compare_scalar_types(bcx, test_val.unwrap(), vbegin,
                                                                 t, ast::BiGe, debug_loc);
-                                let llle = compare_scalar_types(bcx, test_val, vend,
+                                let llle = compare_scalar_types(bcx, test_val.unwrap(), vend,
                                                                 t, ast::BiLe, debug_loc);
                                 Result::new(bcx, And(bcx, llge, llle, DebugLoc::None))
                             }
                             LowerBound(Result { bcx, val }) => {
-                                Result::new(bcx, compare_scalar_types(bcx, test_val,
+                                Result::new(bcx, compare_scalar_types(bcx, test_val.unwrap(),
                                                                       val, t, ast::BiGe,
                                                                       debug_loc))
                             }
@@ -1189,11 +1181,11 @@ fn compile_submatch_continue<'a, 'p, 'blk, 'tcx>(mut bcx: Block<'blk, 'tcx>,
         let mut unpacked = Vec::new();
         match *opt {
             Variant(ref vinfo, ref repr, _, _) => {
-                let ExtractedBlock {vals: argvals, bcx: new_bcx} =
-                    extract_variant_args(opt_cx, &**repr, &vinfo, val);
-                size = argvals.len();
-                unpacked = argvals;
-                opt_cx = new_bcx;
+                size = adt::num_args(repr, vinfo.disr_val);
+                unpacked = (0..size).map(|i| {
+                    let ty = adt::trans_field_type(opt_cx, repr, vinfo.disr_val, i);
+                    val.get_element(opt_cx, ty, repr, vinfo.disr_val, i)
+                }).collect();
             }
             SliceLengthEqual(_len, _) => {
                 panic!("Not yet implemeneted");
@@ -1349,7 +1341,7 @@ fn trans_match_inner<'blk, 'tcx>(scope_cx: Block<'blk, 'tcx>,
         && arm.pats.last().unwrap().node == ast::PatWild(ast::PatWildSingle)
     });
 
-    compile_submatch(bcx, &matches[..], &[discr_datum.val], &chk, has_default);
+    compile_submatch(bcx, &matches[..], &[discr_datum], &chk, has_default);
 
     let mut arm_cxs = Vec::new();
     for arm_data in &arm_datas {
