@@ -607,9 +607,11 @@ impl Wtf8 {
         if len < 3 {
             return None
         }
-        match &self.bytes[(len - 3)..] {
-            [0xED, b2 @ 0xA0...0xAF, b3] => Some(decode_surrogate(b2, b3)),
-            _ => None
+        let b = &self.bytes[(len - 3)..];
+        if b.len() == 3 && b[0] == 0xED && b[1] >= 0xA0 && b[1] <= 0xAF {
+            Some(decode_surrogate(b[1], b[2]))
+        } else {
+            None
         }
     }
 
@@ -619,9 +621,14 @@ impl Wtf8 {
         if len < 3 {
             return None
         }
-        match &self.bytes[..3] {
-            [0xED, b2 @ 0xB0...0xBF, b3] => Some(decode_surrogate(b2, b3)),
-            _ => None
+        //match &self.bytes[..3] {
+        //    [0xED, b2 @ 0xB0...0xBF, b3] => Some(decode_surrogate(b2, b3)),
+        //    _ => None
+        //}
+        if self.bytes[0] == 0xED && self.bytes[1] >= 0xB0 && self.bytes[1] <= 0xBF {
+            Some(decode_surrogate(self.bytes[1], self.bytes[2]))
+        } else {
+            None
         }
     }
 }

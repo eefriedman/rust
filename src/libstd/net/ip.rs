@@ -378,12 +378,13 @@ impl Ipv6Addr {
     /// ::a.b.c.d and ::ffff:a.b.c.d become a.b.c.d
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn to_ipv4(&self) -> Option<Ipv4Addr> {
-        match self.segments() {
-            [0, 0, 0, 0, 0, f, g, h] if f == 0 || f == 0xffff => {
-                Some(Ipv4Addr::new((g >> 8) as u8, g as u8,
-                                   (h >> 8) as u8, h as u8))
-            },
-            _ => None
+        let s  = self.segments();
+        if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && (s[5] == 0 || s[5] == 0xffff)
+        {
+            Some(Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8,
+                               (s[7] >> 8) as u8, s[7] as u8))
+        } else {
+            None
         }
     }
 }
@@ -391,22 +392,20 @@ impl Ipv6Addr {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Display for Ipv6Addr {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self.segments() {
-            // We need special cases for :: and ::1, otherwise they're formatted
-            // as ::0.0.0.[01]
-            [0, 0, 0, 0, 0, 0, 0, 0] => write!(fmt, "::"),
-            [0, 0, 0, 0, 0, 0, 0, 1] => write!(fmt, "::1"),
+        let s = &self.segments();
+        if s == &[0, 0, 0, 0, 0, 0, 0, 0] {
+            write!(fmt, "::")
+        } else if s == &[0, 0, 0, 0, 0, 0, 0, 1] {
+            write!(fmt, "::1")
+        } else if s[..6] == [0, 0, 0, 0, 0, 0] {
             // Ipv4 Compatible address
-            [0, 0, 0, 0, 0, 0, g, h] => {
-                write!(fmt, "::{}.{}.{}.{}", (g >> 8) as u8, g as u8,
-                       (h >> 8) as u8, h as u8)
-            }
+            write!(fmt, "::{}.{}.{}.{}", (s[6] >> 8) as u8, s[6] as u8,
+                   (s[7] >> 8) as u8, s[7] as u8)
+        } else if s[..6] == [0, 0, 0, 0, 0, 0xffff] {
             // Ipv4-Mapped address
-            [0, 0, 0, 0, 0, 0xffff, g, h] => {
-                write!(fmt, "::ffff:{}.{}.{}.{}", (g >> 8) as u8, g as u8,
-                       (h >> 8) as u8, h as u8)
-            },
-            _ => {
+            write!(fmt, "::ffff:{}.{}.{}.{}", (s[6] >> 8) as u8, s[6] as u8,
+                   (s[7] >> 8) as u8, s[7] as u8)
+        } else {
                 fn find_zero_slice(segments: &[u16; 8]) -> (usize, usize) {
                     let mut longest_span_len = 0;
                     let mut longest_span_at = 0;
@@ -449,11 +448,9 @@ impl fmt::Display for Ipv6Addr {
                            fmt_subslice(&self.segments()[..zeros_at]),
                            fmt_subslice(&self.segments()[zeros_at + zeros_len..]))
                 } else {
-                    let &[a, b, c, d, e, f, g, h] = &self.segments();
                     write!(fmt, "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
-                           a, b, c, d, e, f, g, h)
+                           s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7])
                 }
-            }
         }
     }
 }

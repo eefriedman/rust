@@ -117,7 +117,6 @@
 #![feature(macro_reexport)]
 #![feature(optin_builtin_traits)]
 #![feature(rand)]
-#![feature(slice_patterns)]
 #![feature(staged_api)]
 #![feature(std_misc)]
 #![feature(str_char)]
