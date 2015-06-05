@@ -85,9 +85,6 @@ extern "C" LLVMExecutionEngineRef LLVMBuildExecutionEngine(
     std::string error_str;
     TargetOptions options;
 
-    options.JITEmitDebugInfo = true;
-    options.NoFramePointerElim = true;
-
     ExecutionEngine *ee =
     #if LLVM_VERSION_MINOR >= 6
         EngineBuilder(std::unique_ptr<Module>(unwrap(mod)))
