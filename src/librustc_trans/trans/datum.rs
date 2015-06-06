@@ -352,7 +352,8 @@ impl KindOps for Lvalue {
                     // We don't know how to prevent the drop glue for this
                     // lvalue from running.
                     unsafe {llvm::LLVMDumpValue(llvm::LLVMGetBasicBlockParent(llvm::LLVMGetInstructionParent(val))); }
-                    bcx.tcx().sess.bug("Moved out of NoCleanup lvalue");
+                    unsafe {llvm::LLVMDumpValue(val); }
+                    bcx.tcx().sess.bug(&format!("Moved out of NoCleanup lvalue {}", ty_to_string(bcx.tcx(), ty)));
                 }
                 bcx
             }
