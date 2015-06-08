@@ -770,7 +770,8 @@ fn constrain_cast(rcx: &mut Rcx,
             }
 
             /*From:*/ (_,
-            /*To:  */  &ty::ty_trait(box ty::TyTrait { ref bounds, .. })) => {
+            /*To:  */  &ty::ty_trait(ref trait_info)) => {
+                let ty::TyTrait { ref bounds, .. } = **trait_info;
                 // When T is existentially quantified as a trait
                 // `Foo+'to`, it must outlive the region bound `'to`.
                 type_must_outlive(rcx, infer::RelateObjectBound(cast_expr.span),

@@ -91,8 +91,8 @@ pub fn enc_ty<'a, 'tcx>(w: &mut Encoder, cx: &ctxt<'a, 'tcx>, t: Ty<'tcx>) {
             enc_substs(w, cx, substs);
             mywrite!(w, "]");
         }
-        ty::ty_trait(box ty::TyTrait { ref principal,
-                                       ref bounds }) => {
+        ty::ty_trait(ref trait_info) => {
+            let ty::TyTrait { ref principal, ref bounds } = **trait_info;
             mywrite!(w, "x[");
             enc_trait_ref(w, cx, principal.0);
             enc_existential_bounds(w, cx, bounds);

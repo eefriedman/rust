@@ -511,7 +511,7 @@ impl<T> LinkedList<T> {
     ///
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn pop_front(&mut self) -> Option<T> {
-        self.pop_front_node().map(|box Node{value, ..}| value)
+        self.pop_front_node().map(|n| { let Node{value, ..} = *n; value })
     }
 
     /// Appends an element to the back of a list
@@ -547,7 +547,7 @@ impl<T> LinkedList<T> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn pop_back(&mut self) -> Option<T> {
-        self.pop_back_node().map(|box Node{value, ..}| value)
+        self.pop_back_node().map(|n| { let Node{value, ..} = *n; value })
     }
 
     /// Splits the list into two at the given index. Returns everything after the given index,

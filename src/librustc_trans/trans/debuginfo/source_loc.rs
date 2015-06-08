@@ -98,7 +98,7 @@ pub fn set_source_location(fcx: &FunctionContext,
             set_debug_location(fcx.ccx, UnknownLocation);
             return;
         }
-        FunctionDebugContext::RegularContext(box ref function_debug_context) => {
+        FunctionDebugContext::RegularContext(ref function_debug_context) => {
             if function_debug_context.source_location_override.get() {
                 // Just ignore any attempts to set a new debug location while
                 // the override is active.
@@ -138,7 +138,7 @@ pub fn with_source_location_override<F, R>(fcx: &FunctionContext,
             set_debug_location(fcx.ccx, UnknownLocation);
             wrapped_function()
         }
-        FunctionDebugContext::RegularContext(box ref function_debug_context) => {
+        FunctionDebugContext::RegularContext(ref function_debug_context) => {
             if function_debug_context.source_location_override.get() {
                 wrapped_function()
             } else {
@@ -171,7 +171,7 @@ pub fn clear_source_location(fcx: &FunctionContext) {
 /// first real statement/expression of the function is translated.
 pub fn start_emitting_source_locations(fcx: &FunctionContext) {
     match fcx.debug_context {
-        FunctionDebugContext::RegularContext(box ref data) => {
+        FunctionDebugContext::RegularContext(ref data) => {
             data.source_locations_enabled.set(true)
         },
         _ => { /* safe to ignore */ }

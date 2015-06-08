@@ -270,8 +270,8 @@ impl<'a,'tcx> ProbeContext<'a,'tcx> {
                self_ty.repr(self.tcx()));
 
         match self_ty.sty {
-            ty::ty_trait(box ref data) => {
-                self.assemble_inherent_candidates_from_object(self_ty, data);
+            ty::ty_trait(ref data) => {
+                self.assemble_inherent_candidates_from_object(self_ty, &data);
                 self.assemble_inherent_impl_candidates_for_type(data.principal_def_id());
             }
             ty::ty_enum(did, _) |

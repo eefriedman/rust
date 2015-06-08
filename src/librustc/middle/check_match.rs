@@ -357,19 +357,18 @@ fn raw_pat<'a>(p: &'a Pat) -> &'a Pat {
 fn check_exhaustive(cx: &MatchCheckCtxt, sp: Span, matrix: &Matrix, source: ast::MatchSource) {
     match is_useful(cx, matrix, &[DUMMY_WILD_PAT], ConstructWitness) {
         UsefulWithWitness(pats) => {
-            let witness = match &pats[..] {
-                [ref witness] => &**witness,
-                [] => DUMMY_WILD_PAT,
-                _ => unreachable!()
+            let witness: &Pat = if pats.len() == 1 {
+                &*pats[0]
+            } else if pats.is_empty() {
+                DUMMY_WILD_PAT
+            } else {
+                unreachable!()
             };
             match source {
                 ast::MatchSource::ForLoopDesugar => {
                     // `witness` has the form `Some(<head>)`, peel off the `Some`
                     let witness = match witness.node {
-                        ast::PatEnum(_, Some(ref pats)) => match &pats[..] {
-                            [ref pat] => &**pat,
-                            _ => unreachable!(),
-                        },
+                        ast::PatEnum(_, Some(ref pats)) => &pats[0],
                         _ => unreachable!(),
                     };
 

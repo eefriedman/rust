@@ -113,7 +113,7 @@ impl FunctionDebugContext {
                    span: Span)
                    -> &'a FunctionDebugContextData {
         match *self {
-            FunctionDebugContext::RegularContext(box ref data) => data,
+            FunctionDebugContext::RegularContext(ref data) => &data,
             FunctionDebugContext::DebugInfoDisabled => {
                 cx.sess().span_bug(span,
                                    FunctionDebugContext::debuginfo_disabled_message());

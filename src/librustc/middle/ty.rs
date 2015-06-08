@@ -2971,7 +2971,8 @@ impl FlagComputation {
                 self.add_projection_ty(data);
             }
 
-            &ty_trait(box TyTrait { ref principal, ref bounds }) => {
+            &ty_trait(ref trait_info) => {
+                let TyTrait { ref principal, ref bounds } = **trait_info;
                 let mut computation = FlagComputation::new();
                 computation.add_substs(principal.0.substs);
                 for projection_bound in &bounds.projection_bounds {
@@ -3744,7 +3745,8 @@ pub fn type_contents<'tcx>(cx: &ctxt<'tcx>, ty: Ty<'tcx>) -> TypeContents {
                 }
             }
 
-            ty_trait(box TyTrait { ref bounds, .. }) => {
+            ty_trait(ref trait_info) => {
+                let TyTrait { ref bounds, .. } = **trait_info;
                 object_contents(bounds) | TC::ReachesFfiUnsafe | TC::Nonsized
             }
 

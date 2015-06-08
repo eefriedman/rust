@@ -80,7 +80,8 @@ fn push_subtypes<'tcx>(stack: &mut Vec<Ty<'tcx>>, parent_ty: Ty<'tcx>) {
         ty::ty_projection(ref data) => {
             push_reversed(stack, data.trait_ref.substs.types.as_slice());
         }
-        ty::ty_trait(box ty::TyTrait { ref principal, ref bounds }) => {
+        ty::ty_trait(ref trait_info) => {
+            let ty::TyTrait { ref principal, ref bounds } = **trait_info;
             push_reversed(stack, principal.substs().types.as_slice());
             push_reversed(stack, &bounds.projection_bounds.iter().map(|pred| {
                 pred.0.ty

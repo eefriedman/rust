@@ -378,9 +378,10 @@ pub fn ty_to_string<'tcx>(cx: &ctxt<'tcx>, typ: &ty::TyS<'tcx>) -> String {
                 .iter()
                 .map(|elem| ty_to_string(cx, *elem))
                 .collect::<Vec<_>>();
-            match &strs[..] {
-                [ref string] => format!("({},)", string),
-                strs => format!("({})", strs.connect(", "))
+            if strs.len() == 1 {
+                format!("({},)", strs[0])
+            } else {
+                format!("({})", strs.connect(", "))
             }
         }
         ty_bare_fn(opt_def_id, ref f) => {

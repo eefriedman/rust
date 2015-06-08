@@ -317,8 +317,9 @@ pub fn unsized_info<'ccx, 'tcx>(ccx: &CrateContext<'ccx, 'tcx>,
             // change to the vtable.
             old_info.expect("unsized_info: missing old info for trait upcast")
         }
-        (_, &ty::ty_trait(box ty::TyTrait { ref principal, .. })) => {
+        (_, &ty::ty_trait(ref trait_info)) => {
             // Note that we preserve binding levels here:
+            let ty::TyTrait { ref principal, .. } = **trait_info;
             let substs = principal.0.substs.with_self_ty(source).erase_regions();
             let substs = ccx.tcx().mk_substs(substs);
             let trait_ref = ty::Binder(ty::TraitRef { def_id: principal.def_id(),

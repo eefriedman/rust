@@ -27,7 +27,6 @@
 #![allow(trivial_casts)]
 #![feature(alloc)]
 #![feature(box_syntax)]
-#![feature(box_patterns)]
 #![feature(core)]
 #![feature(lang_items)]
 #![feature(staged_api)]

@@ -602,7 +602,8 @@ pub fn super_fold_ty<'tcx, T: TypeFolder<'tcx>>(this: &mut T,
             let substs = substs.fold_with(this);
             ty::ty_enum(tid, this.tcx().mk_substs(substs))
         }
-        ty::ty_trait(box ty::TyTrait { ref principal, ref bounds }) => {
+        ty::ty_trait(ref trait_info) => {
+            let ty::TyTrait { ref principal, ref bounds } = **trait_info;
             ty::ty_trait(box ty::TyTrait {
                 principal: principal.fold_with(this),
                 bounds: bounds.fold_with(this),

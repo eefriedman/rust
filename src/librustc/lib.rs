@@ -26,7 +26,6 @@
       html_root_url = "http://doc.rust-lang.org/nightly/")]
 
 #![feature(associated_consts)]
-#![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(collections)]
 #![feature(const_fn)]
@@ -41,7 +40,6 @@
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
-#![feature(slice_patterns)]
 #![feature(staged_api)]
 #![feature(std_misc)]
 #![feature(str_char)]
