@@ -226,7 +226,7 @@ impl Error {
     pub fn into_inner(self) -> Option<Box<error::Error+Send+Sync>> {
         match self.repr {
             Repr::Os(..) => None,
-            Repr::Custom(c) => Some(c.error)
+            Repr::Custom(c) => { let x = *c; Some(x.error) }
         }
     }
 

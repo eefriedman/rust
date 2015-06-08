@@ -326,29 +326,34 @@ make_MacEager! {
 
 impl MacResult for MacEager {
     fn make_expr(self: Box<Self>) -> Option<P<ast::Expr>> {
-        self.expr
+        let selfx = *self;
+        selfx.expr
     }
 
     fn make_items(self: Box<Self>) -> Option<SmallVector<P<ast::Item>>> {
-        self.items
+        let selfx = *self;
+        selfx.items
     }
 
     fn make_impl_items(self: Box<Self>) -> Option<SmallVector<P<ast::ImplItem>>> {
-        self.impl_items
+        let selfx = *self;
+        selfx.impl_items
     }
 
     fn make_stmts(self: Box<Self>) -> Option<SmallVector<P<ast::Stmt>>> {
-        match self.stmts.as_ref().map_or(0, |s| s.len()) {
-            0 => make_stmts_default!(self),
-            _ => self.stmts,
+        let selfx = *self;
+        match selfx.stmts.as_ref().map_or(0, |s| s.len()) {
+            0 => make_stmts_default!(Box::new(selfx)),
+            _ => selfx.stmts,
         }
     }
 
     fn make_pat(self: Box<Self>) -> Option<P<ast::Pat>> {
-        if let Some(p) = self.pat {
+        let selfx = *self;
+        if let Some(p) = selfx.pat {
             return Some(p);
         }
-        if let Some(e) = self.expr {
+        if let Some(e) = selfx.expr {
             if let ast::ExprLit(_) = e.node {
                 return Some(P(ast::Pat {
                     id: ast::DUMMY_NODE_ID,
