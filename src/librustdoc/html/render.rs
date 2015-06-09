@@ -1065,12 +1065,13 @@ impl DocFolder for Cache {
                         // Figure out the id of this impl. This may map to a
                         // primitive rather than always to a struct/enum.
                         let did = match i.for_ {
-                            clean::ResolvedPath { did, .. } |
-                            clean::BorrowedRef {
-                                type_: box clean::ResolvedPath { did, .. }, ..
-                            } => {
-                                Some(did)
-                            }
+                            clean::ResolvedPath { did, .. } => Some(did),
+                            //clean::BorrowedRef {
+                            //    type_: trait_info, ..
+                            //} => {
+                            //    match clean::ResolvedPath { did, .. } = *trait_info;
+                            //    Some(did)
+                            //}
 
                             ref t => {
                                 t.primitive_type().and_then(|t| {

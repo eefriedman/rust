@@ -1480,13 +1480,17 @@ pub enum TypeKind {
 impl Type {
     pub fn primitive_type(&self) -> Option<PrimitiveType> {
         match *self {
-            Primitive(p) | BorrowedRef { type_: box Primitive(p), ..} => Some(p),
-            Vector(..) | BorrowedRef{ type_: box Vector(..), ..  } => Some(Slice),
-            FixedVector(..) | BorrowedRef { type_: box FixedVector(..), .. } => {
-                Some(Array)
-            }
+            Primitive(p) => Some(p),
+            Vector(..) => Some(Slice),
+            FixedVector(..) => Some(Array),
             Tuple(..) => Some(PrimitiveTuple),
             RawPointer(..) => Some(PrimitiveRawPointer),
+            BorrowedRef { type_: ref t, .. } => match **t {
+                Primitive(p) => Some(p),
+                Vector(..) => Some(Slice),
+                FixedVector(..) => Some(Array),
+                _ => None
+            },
             _ => None,
         }
     }
@@ -1691,7 +1695,8 @@ impl<'tcx> Clean<Type> for ty::Ty<'tcx> {
                     is_generic: false,
                 }
             }
-            ty::ty_trait(box ty::TyTrait { ref principal, ref bounds }) => {
+            ty::ty_trait(ref type_info) => {
+                let ty::TyTrait { ref principal, ref bounds } = **type_info;
                 let did = principal.def_id();
                 let fqn = csearch::get_item_path(cx.tcx(), did);
                 let fqn: Vec<_> = fqn.into_iter().map(|i| i.to_string()).collect();
@@ -1876,11 +1881,15 @@ impl<'tcx> Clean<Item> for ty::VariantInfo<'tcx> {
     fn clean(&self, cx: &DocContext) -> Item {
         // use syntax::parse::token::special_idents::unnamed_field;
         let kind = match self.arg_names.as_ref().map(|s| &**s) {
-            None | Some([]) if self.args.is_empty() => CLikeVariant,
-            None | Some([]) => {
+            None if self.args.is_empty() => CLikeVariant,
+            None => {
                 TupleVariant(self.args.clean(cx))
             }
             Some(s) => {
+                if s.is_empty() {
+                    if self.args.is_empty() { CLikeVariant }
+                    else { TupleVariant(self.args.clean(cx)) }
+                } else {
                 StructVariant(VariantStruct {
                     struct_type: doctree::Plain,
                     fields_stripped: false,
@@ -1905,6 +1914,7 @@ impl<'tcx> Clean<Item> for ty::VariantInfo<'tcx> {
                         }
                     }).collect()
                 })
+                }
             }
         };
         Item {

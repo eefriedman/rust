@@ -20,7 +20,6 @@
    html_root_url = "http://doc.rust-lang.org/nightly/",
    html_playground_url = "http://play.rust-lang.org/")]
 
-#![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(collections)]
 #![feature(exit_status)]
@@ -33,7 +32,6 @@
 #![feature(unicode)]
 #![feature(path_ext)]
 #![feature(path_relative_from)]
-#![feature(slice_patterns)]
 
 extern crate arena;
 extern crate getopts;

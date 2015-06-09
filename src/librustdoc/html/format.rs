@@ -457,9 +457,10 @@ impl fmt::Display for clean::Type {
             }
             clean::Tuple(ref typs) => {
                 primitive_link(f, clean::PrimitiveTuple,
-                               &*match &**typs {
-                                    [ref one] => format!("({},)", one),
-                                    many => format!("({})", CommaSep(&many)),
+                               &*if typs.len() == 1 {
+                                   format!("({},)", typs[0])
+                               } else {
+                                   format!("({})", CommaSep(typs))
                                })
             }
             clean::Vector(ref t) => {
@@ -518,11 +519,13 @@ impl fmt::Display for clean::Type {
             //        the ugliness comes from inlining across crates where
             //        everything comes in as a fully resolved QPath (hard to
             //        look at).
-            clean::QPath {
+            /*clean::QPath {
                 ref name,
                 ref self_type,
-                trait_: box clean::ResolvedPath { did, ref typarams, .. },
+                trait_: ref trait_info,
             } => {
+                match **trait_info {
+                    clean::ResolvedPath { did, ref typarams, .. } => {
                 try!(write!(f, "{}::", self_type));
                 let path = clean::Path::singleton(name.clone());
                 try!(resolved_path(f, did, &path, false));
@@ -530,7 +533,9 @@ impl fmt::Display for clean::Type {
                 // FIXME: `typarams` are not rendered, and this seems bad?
                 drop(typarams);
                 Ok(())
-            }
+                    }
+                    _ => unreachable!()
+            }*/
             clean::QPath { ref name, ref self_type, ref trait_ } => {
                 write!(f, "&lt;{} as {}&gt;::{}", self_type, trait_, name)
             }

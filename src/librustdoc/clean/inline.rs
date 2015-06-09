@@ -188,10 +188,10 @@ fn build_struct(cx: &DocContext, tcx: &ty::ctxt, did: ast::DefId) -> clean::Stru
     let fields = ty::lookup_struct_fields(tcx, did);
 
     clean::Struct {
-        struct_type: match &*fields {
-            [] => doctree::Unit,
-            [ref f] if f.name == unnamed_field.name => doctree::Newtype,
-            [ref f, ..] if f.name == unnamed_field.name => doctree::Tuple,
+        struct_type: match fields.len() {
+            0 => doctree::Unit,
+            1 if fields[0].name == unnamed_field.name => doctree::Newtype,
+            l if l > 1 && fields[0].name == unnamed_field.name => doctree::Tuple,
             _ => doctree::Plain,
         },
         generics: (&t.generics, &predicates, subst::TypeSpace).clean(cx),
@@ -505,11 +505,14 @@ fn filter_non_trait_generics(trait_did: ast::DefId, mut g: clean::Generics)
         match *pred {
             clean::WherePredicate::BoundPredicate {
                 ty: clean::QPath {
-                    self_type: box clean::Generic(ref s),
-                    trait_: box clean::ResolvedPath { did, .. },
+                    self_type: ref s,
+                    trait_: ref r,
                     name: ref _name,
                 }, ..
-            } => *s != "Self" || did != trait_did,
+            } => match (&**s, &**r) {
+                (&clean::Generic(ref s), &clean::ResolvedPath { did, .. }) => s != "Self" || did != trait_did,
+                _ => true
+            },
             _ => true,
         }
     });
