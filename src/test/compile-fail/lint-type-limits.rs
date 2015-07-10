@@ -8,9 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(negate_unsigned)]
 #![allow(dead_code)]
-#![feature(negate_unsigned)]
 
 // compile-flags: -D unused-comparisons
 fn main() { }
@@ -49,15 +47,4 @@ fn qux() {
                      //~^ WARNING literal out of range for i8
         i += 1;
     }
-}
-
-fn quy() {
-    let i = -23_usize; //~ WARNING negation of unsigned int literal may be unintentional
-                  //~^ WARNING unused variable
-}
-
-fn quz() {
-    let i = 23_usize;
-    let j = -i;   //~ WARNING negation of unsigned int variable may be unintentional
-                  //~^ WARNING unused variable
 }

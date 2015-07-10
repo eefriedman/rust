@@ -107,6 +107,15 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                 }
             }
         }
+        if let ast::ExprUnary(_, ref operand) = e.node {
+            let operand_ty = self.fcx.node_ty(operand.id);
+            let operand_ty = self.fcx.infcx().resolve_type_vars_if_possible(&operand_ty);
+
+            if operand_ty.is_scalar() {
+                self.fcx.inh.tables.borrow_mut().method_map.remove(&MethodCall::expr(e.id));
+            }
+        }
+
     }
 }
 

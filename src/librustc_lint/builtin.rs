@@ -180,15 +180,10 @@ impl LintPass for TypeLimits {
                     };
 
                     if let Some(bits) = opt_ty_bits {
-                        let exceeding = if let ast::ExprLit(ref lit) = r.node {
-                            if let ast::LitInt(shift, _) = lit.node { shift >= bits }
-                            else { false }
-                        } else {
-                            match eval_const_expr_partial(cx.tcx, &**r, Some(cx.tcx.types.usize)) {
-                                Ok(ConstVal::Int(shift)) => { shift as u64 >= bits },
-                                Ok(ConstVal::Uint(shift)) => { shift >= bits },
-                                _ => { false }
-                            }
+                        let exceeding = match eval_const_expr_partial(cx.tcx, &r, None) {
+                            Ok(ConstVal::Int(shift)) => { shift as u64 >= bits },
+                            Ok(ConstVal::Uint(shift)) => { shift >= bits },
+                            _ => { false }
                         };
                         if exceeding {
                             cx.span_lint(EXCEEDING_BITSHIFTS, e.span,

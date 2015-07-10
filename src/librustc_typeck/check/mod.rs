@@ -115,7 +115,6 @@ use syntax::attr::AttrMetaMethods;
 use syntax::ast::{self, DefId, Visibility};
 use syntax::ast_util::{self, local_def};
 use syntax::codemap::{self, Span};
-use syntax::feature_gate;
 use syntax::owned_slice::OwnedSlice;
 use syntax::parse::token;
 use syntax::print::pprust;
@@ -3009,6 +3008,7 @@ fn check_expr_with_unifier<'a, 'tcx, F>(fcx: &FnCtxt<'a, 'tcx>,
         op::check_binop_assign(fcx, expr, op, lhs, rhs);
       }
       ast::ExprUnary(unop, ref oprnd) => {
+        let oprnd = &**oprnd;
         let expected_inner = expected.to_option(fcx).map_or(NoExpectation, |ty| {
             match unop {
                 ast::UnUniq => match ty.sty {
@@ -3019,10 +3019,7 @@ fn check_expr_with_unifier<'a, 'tcx, F>(fcx: &FnCtxt<'a, 'tcx>,
                         NoExpectation
                     }
                 },
-                ast::UnNot | ast::UnNeg => {
-                    expected
-                }
-                ast::UnDeref => {
+                ast::UnNot | ast::UnNeg | ast::UnDeref => {
                     NoExpectation
                 }
             }
@@ -3032,8 +3029,8 @@ fn check_expr_with_unifier<'a, 'tcx, F>(fcx: &FnCtxt<'a, 'tcx>,
             _ => NoPreference
         };
         check_expr_with_expectation_and_lvalue_pref(
-            fcx, &**oprnd, expected_inner, lvalue_pref);
-        let mut oprnd_t = fcx.expr_ty(&**oprnd);
+            fcx, oprnd, expected_inner, lvalue_pref);
+        let mut oprnd_t = fcx.expr_ty(oprnd);
 
         if !oprnd_t.references_error() {
             match unop {
@@ -3046,7 +3043,7 @@ fn check_expr_with_unifier<'a, 'tcx, F>(fcx: &FnCtxt<'a, 'tcx>,
                         Some(mt) => mt.ty,
                         None => match try_overloaded_deref(fcx, expr.span,
                                                            Some(MethodCall::expr(expr.id)),
-                                                           Some(&**oprnd), oprnd_t, lvalue_pref) {
+                                                           Some(oprnd), oprnd_t, lvalue_pref) {
                             Some(mt) => mt.ty,
                             None => {
                                 fcx.type_error_message(expr.span, |actual| {
@@ -3059,31 +3056,29 @@ fn check_expr_with_unifier<'a, 'tcx, F>(fcx: &FnCtxt<'a, 'tcx>,
                     };
                 }
                 ast::UnNot => {
-                    oprnd_t = structurally_resolved_type(fcx, oprnd.span,
-                                                         oprnd_t);
-                    if !(oprnd_t.is_integral() || oprnd_t.sty == ty::TyBool) {
-                        oprnd_t = op::check_user_unop(fcx, "!", "not",
+                    oprnd_t = fcx.resolve_type_vars_if_possible(oprnd_t);
+                    let t = op::check_overloaded_unop(fcx, "!", "not",
                                                       tcx.lang_items.not_trait(),
-                                                      expr, &**oprnd, oprnd_t, unop);
+                                                      expr, oprnd, oprnd_t, unop);
+
+                    // Provide a hint to resolve IntVar types.
+                    if oprnd_t.is_integral()
+                    {
+                        demand::suptype(fcx, expr.span, oprnd_t, t);
                     }
+                    oprnd_t = t;
                 }
                 ast::UnNeg => {
-                    oprnd_t = structurally_resolved_type(fcx, oprnd.span,
-                                                         oprnd_t);
-                    if !(oprnd_t.is_integral() || oprnd_t.is_fp()) {
-                        oprnd_t = op::check_user_unop(fcx, "-", "neg",
+                    oprnd_t = fcx.resolve_type_vars_if_possible(oprnd_t);
+                    let t = op::check_overloaded_unop(fcx, "-", "neg",
                                                       tcx.lang_items.neg_trait(),
-                                                      expr, &**oprnd, oprnd_t, unop);
+                                                      expr, oprnd, oprnd_t, unop);
+                    // Provide a hint to resolve IntVar and FloatVar types.
+                    if oprnd_t.is_numeric()
+                    {
+                        demand::suptype(fcx, expr.span, oprnd_t, t);
                     }
-                    if let ty::TyUint(_) = oprnd_t.sty {
-                        if !tcx.sess.features.borrow().negate_unsigned {
-                            feature_gate::emit_feature_err(
-                                &tcx.sess.parse_sess.span_diagnostic,
-                                "negate_unsigned",
-                                expr.span,
-                                "unary negation of unsigned integers may be removed in the future");
-                        }
-                    }
+                    oprnd_t = t;
                 }
             }
         }

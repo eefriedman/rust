@@ -8,11 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(non_camel_case_types)]
-#![allow(unsigned_negation)]
-
 use self::ConstVal::*;
-
 use self::ErrKind::*;
 
 use ast_map;
@@ -27,7 +23,6 @@ use util::num::ToPrimitive;
 use syntax::ast::{self, Expr};
 use syntax::ast_util;
 use syntax::codemap::Span;
-use syntax::feature_gate;
 use syntax::parse::token::InternedString;
 use syntax::ptr::P;
 use syntax::{codemap, visit};
@@ -352,6 +347,7 @@ pub enum ErrKind {
     InvalidOpForFloats(ast::BinOp_),
     InvalidOpForIntUint(ast::BinOp_),
     InvalidOpForUintInt(ast::BinOp_),
+    NegateOnUnsigned,
     NegateOnString,
     NegateOnBoolean,
     NegateOnBinary,
@@ -397,6 +393,7 @@ impl ConstEvalErr {
             InvalidOpForFloats(_) => "can't do this op on floats".into_cow(),
             InvalidOpForIntUint(..) => "can't do this op on an isize and usize".into_cow(),
             InvalidOpForUintInt(..) => "can't do this op on a usize and isize".into_cow(),
+            NegateOnUnsigned => "negate on unsigned".into_cow(),
             NegateOnString => "negate on string".into_cow(),
             NegateOnBoolean => "negate on boolean".into_cow(),
             NegateOnBinary => "negate on binary literal".into_cow(),
@@ -516,12 +513,6 @@ pub fn const_int_checked_neg<'a>(
     } else {
         Ok(Int(-a))
     }
-}
-
-pub fn const_uint_checked_neg<'a>(
-    a: u64, _e: &'a Expr, _opt_ety: Option<UintTy>) -> EvalResult {
-    // This always succeeds, and by definition, returns `(!a)+1`.
-    Ok(Uint((!a).wrapping_add(1)))
 }
 
 fn const_uint_not(a: u64, opt_ety: Option<UintTy>) -> ConstVal {
@@ -744,16 +735,7 @@ pub fn eval_const_expr_with_substs<'tcx, S>(tcx: &ty::ctxt<'tcx>,
         match try!(eval_const_expr_partial(tcx, &**inner, ety)) {
           Float(f) => Float(-f),
           Int(n) =>  try!(const_int_checked_neg(n, e, expr_int_type)),
-          Uint(i) => {
-              if !tcx.sess.features.borrow().negate_unsigned {
-                  feature_gate::emit_feature_err(
-                      &tcx.sess.parse_sess.span_diagnostic,
-                      "negate_unsigned",
-                      e.span,
-                      "unary negation of unsigned integers may be removed in the future");
-              }
-              try!(const_uint_checked_neg(i, e, expr_uint_type))
-          }
+          Uint(_) => signal!(e, NegateOnUnsigned),
           Str(_) => signal!(e, NegateOnString),
           Bool(_) => signal!(e, NegateOnBoolean),
           Binary(_) => signal!(e, NegateOnBinary),

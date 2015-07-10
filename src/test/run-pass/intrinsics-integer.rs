@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
-#![feature(negate_unsigned)]
 #![feature(intrinsics)]
 
 mod rusti {
@@ -59,10 +57,10 @@ pub fn main() {
         assert_eq!(ctpop32(100), 3);
         assert_eq!(ctpop64(100), 3);
 
-        assert_eq!(ctpop8(-1), 8);
-        assert_eq!(ctpop16(-1), 16);
-        assert_eq!(ctpop32(-1), 32);
-        assert_eq!(ctpop64(-1), 64);
+        assert_eq!(ctpop8(!0), 8);
+        assert_eq!(ctpop16(!0), 16);
+        assert_eq!(ctpop32(!0), 32);
+        assert_eq!(ctpop64(!0), 64);
 
         assert_eq!(ctlz8(0), 8);
         assert_eq!(ctlz16(0), 16);
@@ -84,10 +82,10 @@ pub fn main() {
         assert_eq!(ctlz32(100), 25);
         assert_eq!(ctlz64(100), 57);
 
-        assert_eq!(cttz8(-1), 0);
-        assert_eq!(cttz16(-1), 0);
-        assert_eq!(cttz32(-1), 0);
-        assert_eq!(cttz64(-1), 0);
+        assert_eq!(cttz8(!0), 0);
+        assert_eq!(cttz16(!0), 0);
+        assert_eq!(cttz32(!0), 0);
+        assert_eq!(cttz64(!0), 0);
 
         assert_eq!(cttz8(0), 8);
         assert_eq!(cttz16(0), 16);

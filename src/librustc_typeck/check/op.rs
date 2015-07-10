@@ -243,15 +243,15 @@ fn check_overloaded_binop<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
     (rhs_ty_var, return_ty)
 }
 
-pub fn check_user_unop<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
-                                 op_str: &str,
-                                 mname: &str,
-                                 trait_did: Option<ast::DefId>,
-                                 ex: &'tcx ast::Expr,
-                                 operand_expr: &'tcx ast::Expr,
-                                 operand_ty: Ty<'tcx>,
-                                 op: ast::UnOp)
-                                 -> Ty<'tcx>
+pub fn check_overloaded_unop<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
+                                       op_str: &str,
+                                       mname: &str,
+                                       trait_did: Option<ast::DefId>,
+                                       ex: &'tcx ast::Expr,
+                                       operand_expr: &'tcx ast::Expr,
+                                       operand_ty: Ty<'tcx>,
+                                       op: ast::UnOp)
+                                       -> Ty<'tcx>
 {
     assert!(ast_util::is_by_value_unop(op));
     match lookup_op_method(fcx, ex, operand_ty, vec![],

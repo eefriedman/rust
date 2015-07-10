@@ -15,7 +15,7 @@ use llvm::{ConstFCmp, ConstICmp, SetLinkage, SetUnnamedAddr};
 use llvm::{InternalLinkage, ValueRef, Bool, True};
 use middle::{check_const, def};
 use middle::const_eval::{self, ConstVal};
-use middle::const_eval::{const_int_checked_neg, const_uint_checked_neg};
+use middle::const_eval::{const_int_checked_neg};
 use middle::const_eval::{const_int_checked_add, const_uint_checked_add};
 use middle::const_eval::{const_int_checked_sub, const_uint_checked_sub};
 use middle::const_eval::{const_int_checked_mul, const_uint_checked_mul};
@@ -379,18 +379,7 @@ fn check_unary_expr_validity(cx: &CrateContext, e: &ast::Expr, t: Ty,
                              te: ValueRef) {
     // The only kind of unary expression that we check for validity
     // here is `-expr`, to check if it "overflows" (e.g. `-i32::MIN`).
-    if let ast::ExprUnary(ast::UnNeg, ref inner_e) = e.node {
-
-        // An unfortunate special case: we parse e.g. -128 as a
-        // negation of the literal 128, which means if we're expecting
-        // a i8 (or if it was already suffixed, e.g. `-128_i8`), then
-        // 128 will have already overflowed to -128, and so then the
-        // constant evaluator thinks we're trying to negate -128.
-        //
-        // Catch this up front by looking for ExprLit directly,
-        // and just accepting it.
-        if let ast::ExprLit(_) = inner_e.node { return; }
-
+    if let ast::ExprUnary(ast::UnNeg, _) = e.node {
         let result = match t.sty {
             ty::TyInt(int_type) => {
                 let input = match const_to_opt_int(te) {
@@ -400,15 +389,8 @@ fn check_unary_expr_validity(cx: &CrateContext, e: &ast::Expr, t: Ty,
                 const_int_checked_neg(
                     input, e, Some(const_eval::IntTy::from(cx.tcx(), int_type)))
             }
-            ty::TyUint(uint_type) => {
-                let input = match const_to_opt_uint(te) {
-                    Some(v) => v,
-                    None => return,
-                };
-                const_uint_checked_neg(
-                    input, e, Some(const_eval::UintTy::from(cx.tcx(), uint_type)))
-            }
-            _ => return,
+            ty::TyFloat(_) => return,
+            _ => cx.sess().bug("Unexpected unary negation type")
         };
 
         // We do not actually care about a successful result.

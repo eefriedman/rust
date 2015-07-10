@@ -87,7 +87,9 @@ pub fn check_pat<'a, 'tcx>(pcx: &pat_ctxt<'a, 'tcx>,
             check_expr(fcx, end);
 
             let lhs_ty = fcx.expr_ty(begin);
+            let lhs_ty = fcx.infcx().resolve_type_vars_if_possible(&lhs_ty);
             let rhs_ty = fcx.expr_ty(end);
+            let rhs_ty = fcx.infcx().resolve_type_vars_if_possible(&rhs_ty);
 
             // Check that both end-points are of numeric or char type.
             let numeric_or_char = |ty: Ty| ty.is_numeric() || ty.is_char();
