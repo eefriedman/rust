@@ -28,8 +28,8 @@ pub use self::CandidateSource::*;
 
 pub use self::suggest::{report_error, AllTraitsVec};
 
-mod confirm;
-mod probe;
+pub mod confirm;
+pub mod probe;
 mod suggest;
 
 pub enum MethodError<'tcx> {

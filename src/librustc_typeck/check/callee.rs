@@ -43,7 +43,7 @@ pub fn check_legal_trait_for_method_call(ccx: &CrateCtxt, span: Span, trait_id: 
 
     if did == li.drop_trait() {
         span_err!(tcx.sess, span, E0040, "explicit use of destructor method");
-    } else if !tcx.sess.features.borrow().unboxed_closures {
+    } else if false && !tcx.sess.features.borrow().unboxed_closures {
         // the #[feature(unboxed_closures)] feature isn't
         // activated so we need to enforce the closure
         // restrictions.
@@ -74,11 +74,11 @@ pub fn check_call<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
 {
     check_expr(fcx, callee_expr);
     let original_callee_ty = fcx.expr_ty(callee_expr);
-    let (callee_ty, _, result) =
+    let (callee_ty, autoderefs, result) =
         autoderef(fcx,
                   callee_expr.span,
                   original_callee_ty,
-                  Some(callee_expr),
+                  None,
                   UnresolvedTypeAction::Error,
                   LvaluePreference::NoPreference,
                   |adj_ty, idx| {
@@ -92,14 +92,39 @@ pub fn check_call<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
         }
 
         Some(CallStep::Builtin) => {
+            // Record autoderefs.
+            autoderef(fcx,
+                      callee_expr.span,
+                      original_callee_ty,
+                      Some(callee_expr),
+                      UnresolvedTypeAction::Error,
+                      LvaluePreference::NoPreference,
+                      |_, idx| if idx == autoderefs { Some(()) } else { None });
             confirm_builtin_call(fcx, call_expr, callee_ty, arg_exprs, expected);
         }
 
         Some(CallStep::DeferredClosure(fn_sig)) => {
+            // Record autoderefs.
+            autoderef(fcx,
+                      callee_expr.span,
+                      original_callee_ty,
+                      Some(callee_expr),
+                      UnresolvedTypeAction::Error,
+                      LvaluePreference::NoPreference,
+                      |_, idx| if idx == autoderefs { Some(()) } else { None });
             confirm_deferred_closure_call(fcx, call_expr, arg_exprs, expected, fn_sig);
         }
 
-        Some(CallStep::Overloaded(method_callee)) => {
+        Some(CallStep::Overloaded(method_callee, autoref)) => {
+            let pick = method::probe::Pick {
+                item: fcx.tcx().impl_or_trait_item(method_callee.def_id),
+                kind: method::probe::TraitPick,
+                autoderefs: autoderefs,
+                autoref: autoref,
+                unsize: None
+            };
+            method::confirm::confirm(fcx, callee_expr.span, callee_expr,
+                                     call_expr, original_callee_ty, pick, Vec::new());
             confirm_overloaded_call(fcx, call_expr, callee_expr,
                                     arg_exprs, expected, method_callee);
         }
@@ -109,7 +134,7 @@ pub fn check_call<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
 enum CallStep<'tcx> {
     Builtin,
     DeferredClosure(ty::FnSig<'tcx>),
-    Overloaded(ty::MethodCallee<'tcx>)
+    Overloaded(ty::MethodCallee<'tcx>, Option<ast::Mutability>)
 }
 
 fn try_overloaded_call_step<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
@@ -171,22 +196,23 @@ fn try_overloaded_call_step<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
         _ => {}
     }
 
-    try_overloaded_call_traits(fcx, call_expr, callee_expr, adjusted_ty, autoderefs)
-        .map(|method_callee| CallStep::Overloaded(method_callee))
+    try_overloaded_call_traits(fcx, call_expr, None, adjusted_ty, autoderefs)
+        .map(|(method_callee, mutbl)| CallStep::Overloaded(method_callee, mutbl))
 }
 
 fn try_overloaded_call_traits<'a,'tcx>(fcx: &FnCtxt<'a, 'tcx>,
                                        call_expr: &ast::Expr,
-                                       callee_expr: &ast::Expr,
+                                       callee_expr: Option<&ast::Expr>,
                                        adjusted_ty: Ty<'tcx>,
                                        autoderefs: usize)
-                                       -> Option<ty::MethodCallee<'tcx>>
+                                       -> Option<(ty::MethodCallee<'tcx>,
+                                                  Option<ast::Mutability>)>
 {
     // Try the options that are least restrictive on the caller first.
-    for &(opt_trait_def_id, method_name) in &[
-        (fcx.tcx().lang_items.fn_trait(), token::intern("call")),
-        (fcx.tcx().lang_items.fn_mut_trait(), token::intern("call_mut")),
-        (fcx.tcx().lang_items.fn_once_trait(), token::intern("call_once")),
+    for &(opt_trait_def_id, method_name, mutbl) in &[
+        (fcx.tcx().lang_items.fn_trait(), token::intern("call"), Some(ast::MutImmutable)),
+        (fcx.tcx().lang_items.fn_mut_trait(), token::intern("call_mut"), Some(ast::MutMutable)),
+        (fcx.tcx().lang_items.fn_once_trait(), token::intern("call_once"), None),
     ] {
         let trait_def_id = match opt_trait_def_id {
             Some(def_id) => def_id,
@@ -195,7 +221,7 @@ fn try_overloaded_call_traits<'a,'tcx>(fcx: &FnCtxt<'a, 'tcx>,
 
         match method::lookup_in_trait_adjusted(fcx,
                                                call_expr.span,
-                                               Some(&*callee_expr),
+                                               callee_expr,
                                                method_name,
                                                trait_def_id,
                                                autoderefs,
@@ -204,7 +230,7 @@ fn try_overloaded_call_traits<'a,'tcx>(fcx: &FnCtxt<'a, 'tcx>,
                                                None) {
             None => continue,
             Some(method_callee) => {
-                return Some(method_callee);
+                return Some((method_callee, mutbl));
             }
         }
     }
@@ -347,9 +373,9 @@ impl<'tcx> DeferredCallResolution<'tcx> for CallResolution<'tcx> {
         assert!(fcx.infcx().closure_kind(self.closure_def_id).is_some());
 
         // We may now know enough to figure out fn vs fnmut etc.
-        match try_overloaded_call_traits(fcx, self.call_expr, self.callee_expr,
+        match try_overloaded_call_traits(fcx, self.call_expr, Some(self.callee_expr),
                                          self.adjusted_ty, self.autoderefs) {
-            Some(method_callee) => {
+            Some((method_callee, _mutbl)) => {
                 // One problem is that when we get here, we are going
                 // to have a newly instantiated function signature
                 // from the call trait. This has to be reconciled with
