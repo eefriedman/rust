@@ -986,15 +986,33 @@ pub struct ctxt<'tcx> {
     pub fragment_infos: RefCell<DefIdMap<Vec<FragmentInfo>>>,
 }
 
+#[derive(Debug)]
+pub enum FragmentRepr {
+    /// A fragment which can be reasoned about whole. A whole fragment
+    /// is a piece of a variable which conceptually needs exactly one
+    /// drop flag.  A fragment of a type which implements Drop is always
+    /// whole.
+    Whole,
+    /// A box which needs to be split into the box allocation
+    /// and its contents. Note that paths always have a finite depth, so
+    /// so we don't need an unlimited number of flags to handle a
+    /// box which recursively contains a box.
+    Boxed(Box<FragmentRepr>),
+    /// A struct, tuple, or downcast enum which needs to be split into
+    /// its component fields.
+    Fields(Vec<FragmentRepr>),
+    /// An enum where we need to separately keep track of the contents of each
+    /// possible variant.
+    Enum(Vec<(ast::DefId, FragmentRepr)>),
+    // No handling for arrays is necessary at the moment, but it would
+    // go here when it needs to be implemented.
+}
+
 /// Describes the fragment-state associated with a NodeId.
-///
-/// Currently only unfragmented paths have entries in the table,
-/// but longer-term this enum is expected to expand to also
-/// include data for fragmented paths.
-#[derive(Copy, Clone, Debug)]
-pub enum FragmentInfo {
-    Moved { var: NodeId, move_expr: NodeId },
-    Assigned { var: NodeId, assign_expr: NodeId, assignee_id: NodeId },
+#[derive(Debug)]
+pub struct FragmentInfo {
+    var: NodeId,
+    repr: FragmentRepr
 }
 
 impl<'tcx> ctxt<'tcx> {

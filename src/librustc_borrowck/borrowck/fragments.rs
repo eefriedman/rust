@@ -12,8 +12,6 @@
 //! tracking drop obligations. Please see the extensive comments in the
 //! section "Structural fragments" in `README.md`.
 
-use self::Fragment::*;
-
 use borrowck::InteriorKind::{InteriorField, InteriorElement};
 use borrowck::{self, LoanPath};
 use borrowck::LoanPathKind::{LpVar, LpUpvar, LpDowncast, LpExtend};
@@ -21,43 +19,15 @@ use borrowck::LoanPathElem::{LpDeref, LpInterior};
 use borrowck::move_data::InvalidMovePathIndex;
 use borrowck::move_data::{MoveData, MovePathIndex};
 use rustc::middle::ty;
+use rustc::middle::ty::FragmentRepr;
 use rustc::middle::mem_categorization as mc;
+use rustc::util::nodemap::FnvHashMap;
 
 use std::mem;
 use std::rc::Rc;
 use syntax::ast;
 use syntax::attr::AttrMetaMethods;
 use syntax::codemap::Span;
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum Fragment {
-    // This represents the path described by the move path index
-    Just(MovePathIndex),
-
-    // This represents the collection of all but one of the elements
-    // from an array at the path described by the move path index.
-    // Note that attached MovePathIndex should have mem_categorization
-    // of InteriorElement (i.e. array dereference `&foo[..]`).
-    AllButOneFrom(MovePathIndex),
-}
-
-impl Fragment {
-    fn loan_path_repr(&self, move_data: &MoveData) -> String {
-        let lp = |mpi| move_data.path_loan_path(mpi);
-        match *self {
-            Just(mpi) => format!("{:?}", lp(mpi)),
-            AllButOneFrom(mpi) => format!("$(allbutone {:?})", lp(mpi)),
-        }
-    }
-
-    fn loan_path_user_string(&self, move_data: &MoveData) -> String {
-        let lp = |mpi| move_data.path_loan_path(mpi);
-        match *self {
-            Just(mpi) => lp(mpi).to_string(),
-            AllButOneFrom(mpi) => format!("$(allbutone {})", lp(mpi)),
-        }
-    }
-}
 
 pub fn build_unfragmented_map(this: &mut borrowck::BorrowckCtxt,
                               move_data: &MoveData,
@@ -67,69 +37,98 @@ pub fn build_unfragmented_map(this: &mut borrowck::BorrowckCtxt,
     // For now, don't care about other kinds of fragments; the precise
     // classfication of all paths for non-zeroing *drop* needs them,
     // but the loose approximation used by non-zeroing moves does not.
-    let moved_leaf_paths = fr.moved_leaf_paths();
-    let assigned_leaf_paths = fr.assigned_leaf_paths();
+    let moved_leaf_paths = &fr.moved_leaf_paths;
+    let assigned_leaf_paths = &fr.assigned_leaf_paths;
+    let parents_of_fragments = &fr.parents_of_fragments;
+    let unmoved_fragments = &fr.unmoved_fragments;
+
+    let mut fragment_map = FnvHashMap::<ast::NodeId, FragmentRepr>();
+
+    fn find_var_id(move_data: &MoveData,
+                   move_path_index: MovePathIndex,
+                   id: ast::NodeId)
+                   -> ast::NodeId {
+        let mut lp = &*move_data.path_loan_path(move_path_index);
+        loop {
+            match lp.kind {
+                LpVar(var_id) => return var_id,
+                LpUpvar(ty::UpvarId { var_id, closure_expr_id }) => {
+                    // The `var_id` is unique *relative to* the current function.
+                    // (Check that we are indeed talking about the same function.)
+                    assert_eq!(id, closure_expr_id);
+                    return var_id
+                }
+                LpDowncast(ref sub_lp, _) | LpExtend(ref sub_lp, _, _) => {
+                    lp = sub_lp;
+                }
+            }
+        }
+    }
+
+    let paths = moved_leaf_paths.iter()
+                .chain(assigned_leaf_paths.iter())
+                .chain(unmoved_fragments.iter());
+
+    for &move_path_index in paths {
+        let var_id = find_var_id(move_data, move_path_index, id);
+        let mut lp = &*move_data.path_loan_path(move_path_index);
+        let mut entry = fragment_map.entry(var_id).or_insert(FragmentRepr::Whole);
+        loop {
+            match lp.kind {
+                LpVar(_) | LpUpvar(_) => break,
+                LpDowncast(ref sub_lp, variant_def_id) => {
+                    if let FragmentRepr::Whole = *entry {
+                        let discrs = Vec::new();
+                        *entry = FragmentRepr::Enum(discrs);
+                    }
+                    let mut discrs = if let FragmentRepr::Enum(ref mut discrs) = *entry {
+                        discrs
+                    } else {
+                        this.tcx.sess.bug("Inconsistent FragmentRepr");
+                    };
+                    entry = &mut discrs.iter_mut().find(|e| e.0 == variant_def_id).unwrap().1;
+                    lp = sub_lp;
+                }
+                LpExtend(ref sub_lp, _, LpDeref(_)) => {
+                    if let FragmentRepr::Whole = *entry {
+                        *entry = FragmentRepr::Boxed(Box::new((FragmentRepr::Whole)));
+                    }
+                    entry = if let FragmentRepr::Boxed(ref mut contents) = *entry {
+                        contents
+                    } else {
+                        this.tcx.sess.bug("Inconsistent FragmentRepr");
+                    };
+                    lp = sub_lp;
+                }
+                LpExtend(ref sub_lp, _, LpInterior(InteriorField(f))) => {
+                    if let FragmentRepr::Whole = *entry {
+                        let fields = Vec::new();
+                        *entry = FragmentRepr::Fields(fields);
+                    }
+                    let mut fields = if let FragmentRepr::Fields(ref mut fields) = *entry {
+                        fields
+                    } else {
+                        this.tcx.sess.bug("Inconsistent FragmentRepr");
+                    };
+                    let f_pos = match f {
+                        mc::NamedField(n) => {
+                            let did;
+                            let fields = this.tcx.lookup_struct_fields(did);
+                            fields.iter().position(|f| f.name == n).unwrap()
+                        },
+                        mc::PositionalField(n) => n,
+                    };
+                    entry = &mut fields[f_pos];
+                    lp = sub_lp;
+                }
+                LpExtend(_, _, LpInterior(InteriorElement(_))) => {
+                    this.tcx.sess.bug("Unexpected loan path");
+                }
+            }
+        }
+    }
 
     let mut fragment_infos = Vec::with_capacity(moved_leaf_paths.len());
-
-    let find_var_id = |move_path_index: MovePathIndex| -> Option<ast::NodeId> {
-        let lp = move_data.path_loan_path(move_path_index);
-        match lp.kind {
-            LpVar(var_id) => Some(var_id),
-            LpUpvar(ty::UpvarId { var_id, closure_expr_id }) => {
-                // The `var_id` is unique *relative to* the current function.
-                // (Check that we are indeed talking about the same function.)
-                assert_eq!(id, closure_expr_id);
-                Some(var_id)
-            }
-            LpDowncast(..) | LpExtend(..) => {
-                // This simple implementation of non-zeroing move does
-                // not attempt to deal with tracking substructure
-                // accurately in the general case.
-                None
-            }
-        }
-    };
-
-    let moves = move_data.moves.borrow();
-    for &move_path_index in moved_leaf_paths {
-        let var_id = match find_var_id(move_path_index) {
-            None => continue,
-            Some(var_id) => var_id,
-        };
-
-        move_data.each_applicable_move(move_path_index, |move_index| {
-            let info = ty::FragmentInfo::Moved {
-                var: var_id,
-                move_expr: moves[move_index.get()].id,
-            };
-            debug!("fragment_infos push({:?} \
-                    due to move_path_index: {} move_index: {}",
-                   info, move_path_index.get(), move_index.get());
-            fragment_infos.push(info);
-            true
-        });
-    }
-
-    for &move_path_index in assigned_leaf_paths {
-        let var_id = match find_var_id(move_path_index) {
-            None => continue,
-            Some(var_id) => var_id,
-        };
-
-        let var_assigns = move_data.var_assignments.borrow();
-        for var_assign in var_assigns.iter()
-            .filter(|&assign| assign.path == move_path_index)
-        {
-            let info = ty::FragmentInfo::Assigned {
-                var: var_id,
-                assign_expr: var_assign.id,
-                assignee_id: var_assign.assignee_id,
-            };
-            debug!("fragment_infos push({:?} due to var_assignment", info);
-            fragment_infos.push(info);
-        }
-    }
 
     let mut fraginfo_map = this.tcx.fragment_infos.borrow_mut();
     let fn_did = ast::DefId { krate: ast::LOCAL_CRATE, node: id };
@@ -168,7 +167,7 @@ pub struct FragmentSets {
     /// assigned.  When move_data construction has been completed,
     /// `unmoved_fragments` tracks paths that were *only* results of
     /// being left-behind, and never directly moved themselves.
-    unmoved_fragments: Vec<Fragment>,
+    unmoved_fragments: Vec<MovePathIndex>,
 }
 
 impl FragmentSets {
@@ -220,9 +219,9 @@ pub fn instrument_move_fragments<'tcx>(this: &MoveData<'tcx>,
         }
     };
 
-    let instrument_all_fragments = |kind, vec_rc: &Vec<Fragment>| {
-        for (i, f) in vec_rc.iter().enumerate() {
-            let render = || f.loan_path_user_string(this);
+    let instrument_all_fragments = |kind, vec_rc: &Vec<MovePathIndex>| {
+        for (i, mpi) in vec_rc.iter().enumerate() {
+            let render = || this.path_loan_path(*mpi);
             if span_err {
                 tcx.sess.span_err(sp, &format!("{}: `{}`", kind, render()));
             }
@@ -257,10 +256,6 @@ pub fn fixup_fragment_sets<'tcx>(this: &MoveData<'tcx>, tcx: &ty::ctxt<'tcx>) {
 
     let path_lps = |mpis: &[MovePathIndex]| -> Vec<String> {
         mpis.iter().map(|mpi| format!("{:?}", this.path_loan_path(*mpi))).collect()
-    };
-
-    let frag_lps = |fs: &[Fragment]| -> Vec<String> {
-        fs.iter().map(|f| f.loan_path_repr(this)).collect()
     };
 
     // First, filter out duplicates
@@ -315,16 +310,14 @@ pub fn fixup_fragment_sets<'tcx>(this: &MoveData<'tcx>, tcx: &ty::ctxt<'tcx>) {
 
     unmoved.sort();
     unmoved.dedup();
-    debug!("fragments 4 unmoved: {:?}", frag_lps(&unmoved[..]));
+    debug!("fragments 4 unmoved: {:?}", path_lps(&unmoved[..]));
 
     // Fifth, filter the leftover fragments down to its core.
-    unmoved.retain(|f| match *f {
-        AllButOneFrom(_) => true,
-        Just(mpi) => non_member(mpi, &parents[..]) &&
+    unmoved.retain(|&mpi| non_member(mpi, &parents[..]) &&
             non_member(mpi, &moved[..]) &&
             non_member(mpi, &assigned[..])
-    });
-    debug!("fragments 5 unmoved: {:?}", frag_lps(&unmoved[..]));
+    );
+    debug!("fragments 5 unmoved: {:?}", path_lps(&unmoved[..]));
 
     // Swap contents back in.
     fragments.unmoved_fragments = unmoved;
@@ -347,7 +340,7 @@ pub fn fixup_fragment_sets<'tcx>(this: &MoveData<'tcx>, tcx: &ty::ctxt<'tcx>) {
 /// siblings of `s.x.j`.
 fn add_fragment_siblings<'tcx>(this: &MoveData<'tcx>,
                                tcx: &ty::ctxt<'tcx>,
-                               gathered_fragments: &mut Vec<Fragment>,
+                               gathered_fragments: &mut Vec<MovePathIndex>,
                                lp: Rc<LoanPath<'tcx>>,
                                origin_id: Option<ast::NodeId>) {
     match lp.kind {
@@ -369,18 +362,9 @@ fn add_fragment_siblings<'tcx>(this: &MoveData<'tcx>,
         LpExtend(_, _, LpDeref(mc::Implicit(..)))    |
         LpExtend(_, _, LpDeref(mc::BorrowedPtr(..))) => {}
 
-        // FIXME (pnkfelix): LV[j] should be tracked, at least in the
-        // sense of we will track the remaining drop obligation of the
-        // rest of the array.
-        //
-        // Well, either that or LV[j] should be made illegal.
-        // But even then, we will need to deal with destructuring
-        // bind.
-        //
-        // Anyway, for now: LV[j] is not tracked precisely
         LpExtend(_, _, LpInterior(InteriorElement(..))) => {
-            let mp = this.move_path(tcx, lp.clone());
-            gathered_fragments.push(AllButOneFrom(mp));
+            // It's impossible to actually move out of an array at the moment.
+            panic!("Unexpected loan path");
         }
 
         // field access LV.x and tuple access LV#k are the cases
@@ -406,7 +390,7 @@ fn add_fragment_siblings<'tcx>(this: &MoveData<'tcx>,
 /// Based on this, add move paths for all of the siblings of `origin_lp`.
 fn add_fragment_siblings_for_extension<'tcx>(this: &MoveData<'tcx>,
                                              tcx: &ty::ctxt<'tcx>,
-                                             gathered_fragments: &mut Vec<Fragment>,
+                                             gathered_fragments: &mut Vec<MovePathIndex>,
                                              parent_lp: &Rc<LoanPath<'tcx>>,
                                              mc: mc::MutabilityCategory,
                                              origin_field_name: &mc::FieldName,
@@ -514,7 +498,7 @@ fn add_fragment_siblings_for_extension<'tcx>(this: &MoveData<'tcx>,
 /// loan-path).
 fn add_fragment_sibling_core<'tcx>(this: &MoveData<'tcx>,
                                    tcx: &ty::ctxt<'tcx>,
-                                   gathered_fragments: &mut Vec<Fragment>,
+                                   gathered_fragments: &mut Vec<MovePathIndex>,
                                    parent: Rc<LoanPath<'tcx>>,
                                    mc: mc::MutabilityCategory,
                                    new_field_name: mc::FieldName,
@@ -540,7 +524,7 @@ fn add_fragment_sibling_core<'tcx>(this: &MoveData<'tcx>,
 
     // Do not worry about checking for duplicates here; we will sort
     // and dedup after all are added.
-    gathered_fragments.push(Just(mp));
+    gathered_fragments.push(mp);
 
     mp
 }
